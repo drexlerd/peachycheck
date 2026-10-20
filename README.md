@@ -1,30 +1,31 @@
 # verdog-ai standards
 
-The coding and documentation standards of every verdog-ai repository, and the
-one check that enforces them. There is no repository-local specialization:
-each repository uses the same rules, checkers and tool configurations.
+The coding and documentation standards of every verdog-ai repository, the
+linters that enforce them and the hooks that apply them while Claude Code or
+Codex works. Every repository uses the same rules, linters and tool
+configurations; a repository's `standards.yml` may override what it must.
 
 ## What is here
 
 - `standards/`: the instance. `general/` applies to every file; each folder of
   `languages/` (C++, Jinja, Python, reStructuredText, TypeScript, Verdog) holds its
-  `language.toml`, `overlay.toml` (the only hand-written guideline file, see
-  [Overlay](#overlay)) and `tools.toml` (its checkers). `metrics.toml`
-  declares the code metrics, `literature.bib` what guidelines and metrics
-  cite.
+  `language.toml` and `overlay.toml` (the only hand-written guideline file,
+  see [Overlay](#overlay)). `metrics.toml` declares the code metrics,
+  `general/tools.toml` their measurers.
 - `standards/sources.toml`: the guides the guidelines derive from, each with
   its upstream, pin, sha256, license, attribution, store and parser.
   `verdog-standards index` turns each pinned copy into a tree that mirrors the
   guide's nesting: an `index.md` per level with one line per child, one leaf
   per rule with the rule's complete text, and `index.toml` for scripts (see
   [Guides](#guides)).
-- `templates/<type>/`: the project types. `type.toml` names the marker files
-  that recognise a type and the commands its check runs; `files/` holds the
-  root tool configurations (`ruff.toml`, `pyrightconfig.json`,
-  `eslint.config.mjs`, `.clang-tidy`) every repository
-  of that type shares.
+- `standards.yml`: the organization's configuration, in MegaLinter's style
+  (see [standards.yml](#standardsyml)): the `LINTERS`, the pinned `VERSIONS`
+  of the downloaded ones, the `PROJECT_TYPES` (markers and commands) and the
+  `FILES` each type shares.
+- `rules/`: the tool configurations (`ruff.toml`, `pyrightconfig.json`,
+  `eslint.config.mjs`, `.clang-tidy`, `.vale.ini` and Vale's styles).
 - `src/verdog_standards/`: the engine and the CLI `verdog-standards`;
-  `checks/` holds the checkers the instance runs itself (Jinja block tags,
+  `checks/` holds the linters the instance runs itself (Jinja block tags,
   Jinja environments in Python).
 - `.github/workflows/check.yml`: the reusable workflow every repository calls.
 
@@ -60,21 +61,24 @@ jobs:
     uses: verdog-ai/standards/.github/workflows/check.yml@main
 ```
 
-The workflow installs `verdog-standards`, then fails when
+The workflow installs `verdog-standards` and its linters, then fails when
 
-1. a root tool configuration differs from its template (`sync --check`),
+1. a root tool configuration differs from `rules/` (`sync --check`),
 2. a command of the repository's types fails (`run`),
-3. a changed file gains findings of its language's checkers, or a new or
-   changed Python function outside tests has a cyclomatic complexity above 10
-   (`check-branch`).
+3. a linter finds anything in a changed file (`lint --base`), or anywhere on
+   a push to the default branch (`lint --all`). Repositories are kept
+   finding-free; there is no baseline.
 
 Locally:
 
 ```sh
 uv tool install "verdog-standards @ git+https://github.com/verdog-ai/standards@main"
+verdog-standards install        # download vale and gitleaks, pinned
 verdog-standards types          # the recognised types
 verdog-standards sync           # write the shared tool configurations
-verdog-standards check-branch   # new findings since the merge base
+verdog-standards lint [--fix]   # findings in files changed since the merge base
+verdog-standards lint --all     # findings anywhere
+verdog-standards hooks install  # lint after each edit and before Claude/Codex stop
 verdog-standards show FILE...   # the guidelines that apply to files
 verdog-standards show --html map.html   # the browsable map of the standards
 verdog-standards index          # generate the guides' trees from their copies
@@ -89,12 +93,51 @@ uv run verdog-standards check   # lint the instance
 uv run pytest
 ```
 
-Checkers run isolated from a repository's own configuration, and only new
-findings in changed files count, so a repository adopts the standards without
-fixing its history first.
+auto-se uses the engine as a library: `linting.lint_errors(root, base)` for
+its checks, and its own loop metrics, retriever and prompts through
+`engine.LAYERS`, `LOOPS` and `CHECKS`.
 
-auto-se uses the engine as a library and adds its own loop metrics, retriever
-and prompts through `engine.LAYERS`, `LOOPS`, `CATEGORIES` and `CHECKS`.
+## standards.yml
+
+A repository's `standards.yml` extends the organization's file at a commit
+(`sync` writes it) and overrides keys, as MegaLinter's configuration does:
+
+```yaml
+EXTENDS: https://raw.githubusercontent.com/verdog-ai/standards/<commit>/standards.yml
+DISABLE_LINTERS: [SPELL_VALE]
+FILTER_REGEX_EXCLUDE: ^vendor/
+PYTHON_RUFF_ARGUMENTS: [--preview]
+```
+
+Later files win and mappings merge key by key; the keys
+`CONFIG_PROPERTIES_TO_APPEND` names append their lists. `ENABLE_LINTERS`,
+`DISABLE_LINTERS`, `FILTER_REGEX_EXCLUDE` and per linter
+`<LINTER>_FILTER_REGEX_INCLUDE`, `<LINTER>_FILTER_REGEX_EXCLUDE` and
+`<LINTER>_ARGUMENTS` select what runs. A linter passes the repository's own
+configuration file (`ruff.toml`, `.clang-tidy`, `.vale.ini`) if it has one,
+else the one in `rules/`.
+
+| linter | files | tool |
+|---|---|---|
+| `PYTHON_RUFF`, `PYTHON_RUFF_FORMAT` | `.py` | ruff (pinned dependency) |
+| `PYTHON_JINJA_ENVIRONMENT`, `JINJA_TAGS` | `.py`, `.j2` | `checks/` |
+| `RST_DOC8`, `SPELL_VALE`, `SPELL_CODESPELL` | `.rst` | doc8, vale (downloaded), codespell |
+| `TYPESCRIPT_ESLINT` | `.ts`, `.tsx` | the repository's `node_modules/.bin/eslint` |
+| `CPP_CLANG_TIDY` | C++ | clang-tidy (the PyPI wheel), on `build/standards/compile_commands.json` |
+| `REPOSITORY_GITLEAKS` | every file | gitleaks (downloaded) |
+
+## Hooks
+
+`verdog-standards hooks install` adds two hooks to `~/.claude/settings.json`
+and `~/.codex/hooks.json` (it prints the diff; trust Codex's once with
+`/hooks`):
+
+- after each edit (`Edit|Write|MultiEdit`, Codex's `apply_patch`),
+  `hook post-edit` fixes and lints the edited files and feeds the findings
+  back to the agent;
+- before the agent stops, `hook stop` lints the files changed since the merge
+  base and runs the types' commands; it blocks the stop on a failure, at most
+  twice in a row, then lets the agent stop and shows what remains.
 
 ## Guides
 
@@ -155,21 +198,19 @@ license and attribution), and one line per guideline with a `priority` (its
 id, rule, enforcement and leaf); the agent opens the `index.md` below, down
 to a rule's leaf.
 
-On failure, `check-branch` (and auto-se's gate, which runs the same check)
-names each new finding with the guidelines its check maps to:
+`lint` (and the hooks, and auto-se's gate) names each finding with the
+guidelines its rule maps to:
 
 ```text
-a.cpp gains clang-tidy findings (0 -> 1); fix each new one and follow the guideline it breaks:
-  a.cpp:2: warning: returning a newly created resource ... [cppcoreguidelines-owning-memory]
+a.cpp has 1 findings; fix each one and follow the guideline it breaks:
+  a.cpp:2: CPP_CLANG_TIDY:cppcoreguidelines-owning-memory returning a newly created resource ...
     - cpp-core-guidelines/R.20: R.20: <the rule's title> [checked by clang-tidy cppcoreguidelines-owning-memory] → .../R/smart/R.20.md
     - cpp-core-guidelines/I.11: I.11: <the rule's title> [checked by clang-tidy cppcoreguidelines-owning-memory] → .../I/I.11.md
 ```
 
-Each checker's `check` pattern in `tools.toml` finds a finding's check id. A
-finding is new when the base has none of the same file, check and message,
-wherever its line moved. A check no guideline maps is shown with the tool's
-documentation, and `show --coverage` lists it when the tool's `list` command
-prints it. Other repositories read the trees from
+`checked_by` names a linter by one of its `aliases` in `standards.yml`. A
+rule no guideline maps is shown with the linter's documentation, and
+`show --coverage` lists it when the linter's `list` command prints it. Other repositories read the trees from
 their worktree's `.verdog-standards/references/<guide>/`, where
 `engine.copy_references` puts them.
 
@@ -184,5 +225,5 @@ its pages' articles, since it has no source repository) and Diátaxis CC BY-SA
 C++ Core Guidelines allow copies for personal or internal business use only:
 they are pinned by commit and sha256 and fetched, and their tree generated,
 into `~/.cache/verdog-standards/` only, never into this public repository.
-Vale's `Google` style in `standards/languages/rst/vale/` comes from
+Vale's `Google` style in `rules/vale/` comes from
 [errata-ai/Google](https://github.com/errata-ai/Google) (MIT).

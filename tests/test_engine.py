@@ -1,36 +1,16 @@
 """The engine: languages, guidelines, tools, selection, checks and graph."""
 
 import json
-import os
 import re
 import shutil
 import subprocess
 from collections import Counter
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
-from verdog_standards import cli
+from verdog_standards import cli, config
 from verdog_standards import engine as standards
-
-CLEAN = '''"""A module."""
-
-
-def add(left: int, right: int) -> int:
-    """Add two numbers.
-
-    Args:
-        left: The first number.
-        right: The second number.
-
-    Returns:
-        The sum.
-    """
-    return left + right
-'''
-# N802 and D103: a mixedCase name without a docstring breaks both Python rules.
-VIOLATION = "\n\ndef mixedCase() -> None:\n    pass\n"
 
 
 def _git(root: Path, *args: str) -> str:
@@ -68,6 +48,18 @@ def _instance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return instance
 
 
+def _organization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str
+) -> Path:
+    """An organization file extending the real one with ``text``."""
+    path = _write(
+        tmp_path / "org" / "standards.yml",
+        f"EXTENDS: {config.ORGANIZATION}\n{text}",
+    )
+    monkeypatch.setattr(config, "ORGANIZATION", path)
+    return path
+
+
 def _title(rule: str) -> str:
     """A cached rule's title: the Core Guidelines may not be quoted here."""
     entry = standards.rule(rule)
@@ -94,33 +86,34 @@ def test_a_guideline_table_carries_its_fields_and_line(tmp_path: Path) -> None:
     folder = _language(
         tmp_path / "cpp",
         '["house/no-raw-new"]\ntext = "Never call new directly."\n'
-        'advisory = true\ncite = "k"\nchecked_by = ["clang-tidy"]\n'
+        'advisory = true\nchecked_by = ["clang-tidy"]\n'
         'kind = "coding"\n\n'
         '["cpp-core-guidelines/R.20"]\n'
         'checked_by = ["clang-tidy:cppcoreguidelines-owning-memory"]\n'
         "priority = 1\n",
-        '[clang-tidy]\nrole = "checker"\nrun = "clang-tidy {files}"\n',
+        "",
         'title = "C++"\nextensions = [".cpp"]\n',
     )
     language = standards.parse(folder, "cpp")
     house, derived = language.guidelines
-    assert (house.key, house.advisory, house.cite, house.tools) == (
+    assert (house.key, house.advisory, house.tools) == (
         "cpp/no-raw-new",
         True,
-        "k",
         ("clang-tidy",),
     )
-    assert (house.line, derived.line) == (1, 8)
+    assert (house.line, derived.line) == (1, 7)
     assert (derived.key, derived.source, derived.priority) == (
         "cpp-core-guidelines/R.20",
         "cpp-core-guidelines",
         1,
     )
     assert derived.text == "" and derived.rule == "cpp-core-guidelines/R.20"
-    (check,) = language.checkers()
-    assert (check.tool, check.guidelines) == (
+    # The checkers are the aliases of the organization's linters.
+    (tool,) = language.tools
+    assert (tool.name, tool.linter, tool.role) == (
         "clang-tidy",
-        ("cpp/no-raw-new", "cpp-core-guidelines/R.20"),
+        "CPP_CLANG_TIDY",
+        "checker",
     )
 
 
@@ -162,7 +155,6 @@ def test_languages_activate_by_extension_and_general_always(
         "src/c.cc ends with .cc",
     )
     assert active[1].files == ("a.hpp", "src/c.cc")
-    assert active[1].cite == ("llvm-project-2026", "stroustrup-sutter-2026")
     (guide,) = active[1].guides
     assert guide["id"] == "cpp-core-guidelines"
     assert guide["root"] == ".verdog-standards/references/cpp-core-guidelines"
@@ -217,31 +209,6 @@ def test_every_loop_sees_general_then_its_languages_by_kind(
     assert standards.for_loop(active, "test_implementer") == design
 
 
-def test_checkers_come_from_the_language_s_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (check,) = standards.select(standards.load(), ["a.cpp"], tmp_path)[1].checks
-    assert check.tool == "clang-tidy"
-    assert "cpp-core-guidelines/R.20" in check.guidelines
-    assert "cpp/bug-patterns" in check.guidelines
-    assert "cpp-core-guidelines/R.1" not in check.guidelines
-    assert check.run == (
-        "clang-tidy -p {compile_commands} --checks=-*,cppcoreguidelines-*,"
-        "bugprone-*,performance-*,modernize-make-unique --quiet {files}"
-    )
-    tools = (
-        _instance(monkeypatch, tmp_path) / "languages" / "cpp" / "tools.toml"
-    )
-    tools.write_text(
-        tools.read_text().replace(
-            "clang-tidy -p {compile_commands} --checks",
-            "clang-tidy-18 --checks",
-        )
-    )
-    (check,) = standards.select(standards.load(), ["a.cpp"], tmp_path)[1].checks
-    assert check.run.startswith("clang-tidy-18 --checks=")
-
-
 def test_lint_names_every_format_error_with_file_and_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -251,7 +218,7 @@ def test_lint_names_every_format_error_with_file_and_line(
         '["house/Bad_Id"]\ntext = "T"\ncolour = "red"\n\n'
         '["house/no-text"]\nadvisory = "yes"\n\n'
         '["house/odd-kind"]\ntext = "T"\nkind = "prose"\n\n'
-        '["house/refs"]\ntext = "T"\ncite = "no-such-key"\n'
+        '["house/refs"]\ntext = "T"\nlink = "https://x.org"\n'
         'checked_by = ["nosuch:X1"]\ndetails = "missing.md"\n\n'
         '["google-python/3.16"]\n\n'
         '["nowhere"]\ntext = "T"\n',
@@ -269,7 +236,6 @@ def test_lint_names_every_format_error_with_file_and_line(
         (f"{overlay}:8", "bad/house/no-text: advisory must be a bool."),
         (f"{overlay}:8", "bad/house/no-text: a house rule needs a text."),
         (f"{overlay}:11", "bad/house/odd-kind: kind must be one of"),
-        (f"{overlay}:15", "bad/refs: unknown cite key 'no-such-key'."),
         (f"{overlay}:15", "bad/refs: 'nosuch' is not a checker of bad."),
         (
             f"{overlay}:15",
@@ -278,7 +244,7 @@ def test_lint_names_every_format_error_with_file_and_line(
         (f"{overlay}:21", "'google-python' is no guide of bad."),
         (f"{overlay}:23", "bad/nowhere: the key must be house/<id>"),
         (f"{tools}:1", "bad/runner: role must be one of"),
-        (f"{tools}:4", "bad/empty: a checker needs a run command."),
+        (f"{tools}:4", "checkers are the LINTERS of standards.yml."),
     ):
         assert any(
             e.startswith(f"{where}:") and expected in e for e in errors
@@ -318,348 +284,15 @@ def test_the_instance_is_well_formed() -> None:
     assert standards.lint_all() == []
 
 
-def test_new_python_files_must_follow_the_google_style(tmp_path: Path) -> None:
-    # verifies: style.google_python
-    root, base = _repository(tmp_path, {"legacy.py": CLEAN})
-    (root / "clean.py").write_text(CLEAN)
-    assert standards.changed_errors(root, base) == []
-    (root / "new.py").write_text(CLEAN + VIOLATION)
-    rules = standards.STANDARDS / "languages/python/references/google-python"
-    style = rules / "3-python-style-rules"
-    assert standards.changed_errors(root, base) == [
-        "new.py gains ruff findings (0 -> 1); fix each new one and follow the "
-        "guideline it breaks:\n"
-        "  new.py:17: N802 Function name `mixedCase` should be lowercase\n"
-        "    - google-python/3.16: Name modules, functions and variables in "
-        "`snake_case` and classes in `CapWords`. [checked by ruff N*] → "
-        f"{style / '3.16-naming.md'}",
-        "new.py gains ruff-docstrings findings (0 -> 1); fix each new one and "
-        "follow the guideline it breaks:\n"
-        "  new.py:17: D103 Missing docstring in public function\n"
-        "    - google-python/3.8: 3.8 Comments and Docstrings: Be sure to use "
-        "the right style for module, function, method docstrings and inline "
-        "comments. [checked by ruff-docstrings D*] → "
-        f"{style / '3.8-comments-and-docstrings.md'}",
-    ]
-
-
-def test_changed_files_may_keep_but_not_add_legacy_violations(
-    tmp_path: Path,
-) -> None:
-    # verifies: style.google_python
-    root, base = _repository(tmp_path, {"legacy.py": CLEAN + VIOLATION})
-    (root / "legacy.py").write_text(CLEAN + VIOLATION + "\n\nVALUE = 1\n")
-    assert standards.changed_errors(root, base) == []
-    (root / "legacy.py").write_text(
-        CLEAN + VIOLATION + VIOLATION.replace("mixedCase", "otherCase")
-    )
-    # ruff and ruff-docstrings each count one more finding.
-    assert len(standards.changed_errors(root, base)) == 2
-
-
-def test_the_pinned_guides_of_the_instance_are_not_style_checked(
-    tmp_path: Path,
-) -> None:
-    """Guides keep their authors' style; checks skip them."""
-    root, base = _repository(tmp_path, {"legacy.py": CLEAN})
-    _write(
-        root / "standards" / "languages" / "python" / "references" / "x.py",
-        VIOLATION,
-    )
-    assert standards.changed_errors(root, base) == []
-
-
-def test_generated_files_keep_the_compilers_style(tmp_path: Path) -> None:
-    root, base = _repository(
-        tmp_path,
-        {
-            "project.json": json.dumps(
-                {"sources": [{"path": "gen.py", "ownership": "generated"}]}
-            )
-        },
-    )
-    (root / "gen.py").write_text(VIOLATION)
-    assert standards.changed_errors(root, base) == []
-
-
-def test_typescript_follows_the_same_rule(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # verifies: style.google_typescript
-    root, base = _repository(tmp_path, {"old.ts": "let a = 1;\n"})
-    (root / "old.ts").write_text("let a = 1;\nvar b = 2;\n")
-    (root / "new.ts").write_text("var c = 3;\n")
-
-    def findings(
-        check: standards.Check,
-        title: str,
-        directory: Path,
-        paths: Sequence[str],
-        build: Path,
-    ) -> list[standards.Violation]:
-        if check.tool != "eslint":
-            return []
-        message = "Unexpected var, use let or const instead. [Error/no-var]"
-        return [
-            standards.Violation(f, i, "no-var", message)
-            for f in paths
-            if (directory / f).is_file()
-            for i, line in enumerate(
-                (directory / f).read_text().splitlines(), 1
-            )
-            if line.startswith("var ")
-        ]
-
-    monkeypatch.setattr(standards, "findings", findings)
-    errors = standards.style_errors(root, base, ["old.ts", "new.ts"])
-    assert [e.splitlines()[:2] for e in errors] == [
-        [
-            "new.ts gains eslint findings (0 -> 1); fix each new one and "
-            "follow the guideline it breaks:",
-            "  new.ts:1: Unexpected var, use let or const instead. "
-            "[Error/no-var]",
-        ],
-        [
-            "old.ts gains eslint findings (0 -> 1); fix each new one and "
-            "follow the guideline it breaks:",
-            "  old.ts:2: Unexpected var, use let or const instead. "
-            "[Error/no-var]",
-        ],
-    ]
-    # One check maps to every guideline that names it.
-    assert [line.split(":")[0] for line in errors[0].splitlines()[2:]] == [
-        "    - typescript/gts-style",
-        "    - google-typescript/local-variable-declarations",
-    ]
-
-
-def _clang_tidy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    check: str = "cppcoreguidelines-owning-memory",
-) -> None:
-    script = (
-        'for f in "$@"; do case "$f" in *.cpp) '
-        'grep -n "new" "$f" | sed "s|^\\([0-9]*\\):.*|'
-        f"$f:\\1:1: warning: owning [{check}]"
-        '\\n$f:\\1:1: note: here|";; esac; done'
-    )
-    tool = _write(tmp_path / "bin" / "clang-tidy", f"#!/bin/sh\n{script}\n")
-    tool.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tool.parent}{os.pathsep}{os.environ['PATH']}")
-
-
-def test_cpp_changes_follow_the_core_guidelines_through_clang_tidy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # verifies: style.cpp_core
-    root, base = _repository(
-        tmp_path, {"a.cpp": "int f();\n", "build/compile_commands.json": "[]"}
-    )
-    (root / "a.cpp").write_text("int f();\nint* g = new int;\n")
-    _clang_tidy(tmp_path, monkeypatch)
-    (error,) = standards.style_errors(root, base, ["a.cpp"])
-    tree = standards.tree(standards.guides()["cpp-core-guidelines"])
-    head, finding, *rules = error.splitlines()
-    assert head == (
-        "a.cpp gains clang-tidy findings (0 -> 1); fix each new one and "
-        "follow the guideline it breaks:"
-    )
-    assert finding == (
-        "  a.cpp:2: warning: owning [cppcoreguidelines-owning-memory]"
-    )
-    # owning-memory maps to I.11 and R.20, each with its text and leaf.
-    assert [r.split(":")[0] for r in rules] == [
-        "    - cpp-core-guidelines/R.20",
-        "    - cpp-core-guidelines/I.11",
-    ]
-    assert rules[0].endswith(
-        f"{_title('cpp-core-guidelines/R.20')} "
-        "[checked by clang-tidy cppcoreguidelines-owning-memory] → "
-        f"{tree / 'R/smart/R.20.md'}"
-    )
-    # In a worktree with the copied trees, the leaf is the copy's.
-    standards.copy_references(root)
-    (error,) = standards.style_errors(root, base, ["a.cpp"])
-    assert error.splitlines()[2].endswith(
-        f"→ {standards.WORKTREE_REFERENCES}/cpp-core-guidelines/R/smart/R.20.md"
-    )
-
-
-def test_an_unmapped_check_names_the_tool_s_documentation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, base = _repository(
-        tmp_path, {"a.cpp": "int f();\n", "build/compile_commands.json": "[]"}
-    )
-    (root / "a.cpp").write_text("int f();\nint* g = new int;\n")
-    _clang_tidy(tmp_path, monkeypatch, "misc-no-such-check")
-    (error,) = standards.style_errors(root, base, ["a.cpp"])
-    assert error.splitlines()[2] == (
-        "    - no guideline maps clang-tidy misc-no-such-check; see "
-        "https://clang.llvm.org/extra/clang-tidy/"
-    )
-
-
-def test_a_finding_is_new_by_file_check_and_message_not_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, base = _repository(
-        tmp_path,
-        {"a.cpp": "int* g = new int;\n", "build/compile_commands.json": "[]"},
-    )
-    _clang_tidy(tmp_path, monkeypatch)
-    (root / "a.cpp").write_text("int f();\n\nint* g = new int;\n")
-    assert standards.style_errors(root, base, ["a.cpp"]) == []
-    (root / "a.cpp").write_text("int* g = new int;\nint* h = new int;\n")
-    (error,) = standards.style_errors(root, base, ["a.cpp"])
-    assert error.splitlines()[:2] == [
-        "a.cpp gains clang-tidy findings (1 -> 2); fix each new one and "
-        "follow the guideline it breaks:",
-        "  a.cpp:2: warning: owning [cppcoreguidelines-owning-memory]",
-    ]
-
-
-def test_a_finding_naming_its_checkout_matches_in_base_and_branch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The base runs in a temporary checkout; a message naming the absolute
-    # path of the file must not make the same finding new.
-    root, base = _repository(
-        tmp_path,
-        {"a.cpp": "int* g = new int;\n", "build/compile_commands.json": "[]"},
-    )
-    script = (
-        'for f in "$@"; do grep -n new "$f" | sed "s|^\\([0-9]*\\):.*|'
-        '$PWD/$f:\\1:1: warning: $PWD/$f owns [cppcoreguidelines-owning-memory]|"; done'
-    )
-    tool = _write(tmp_path / "bin" / "clang-tidy", f"#!/bin/sh\n{script}\n")
-    tool.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tool.parent}{os.pathsep}{os.environ['PATH']}")
-    (root / "a.cpp").write_text("int f();\nint* g = new int;\n")
-    assert standards.style_errors(root, base, ["a.cpp"]) == []
-    (root / "a.cpp").write_text("int* g = new int;\nint* h = new int;\n")
-    (error,) = standards.style_errors(root, base, ["a.cpp"])
-    assert "  a.cpp:2: warning: a.cpp owns [" in error
-
-
-def test_tsc_checks_the_project_with_the_branch_s_dependencies(
-    tmp_path: Path,
-) -> None:
-    # The base checkout has no node_modules of its own; it resolves the
-    # branch's, through the tsconfig, so an unchanged finding stays old.
-    root, base = _repository(
-        tmp_path,
-        {
-            ".gitignore": "node_modules/\n",
-            "tsconfig.json": json.dumps(
-                {"compilerOptions": {"jsx": "react-jsx"}, "include": ["src"]}
-            ),
-            "src/b.tsx": "export const b = 1;\n",
-            "src/a.tsx": (
-                'import { x } from "dep";\nimport { b } from "./b";\n'
-                "export const y: string = x + b;\n"
-            ),
-        },
-    )
-    _write(root / "node_modules/dep/package.json", '{"types": "index.d.ts"}')
-    _write(root / "node_modules/dep/index.d.ts", "export const x: number;\n")
-    (root / "src/a.tsx").write_text(
-        "// Changed.\n" + (root / "src/a.tsx").read_text()
-    )
-    if not shutil.which("npm") and not os.environ.get("REQUIRE_CHECKERS"):
-        pytest.skip("npm, which installs tsc, is not installed")
-    errors = standards.style_errors(root, base, ["src/a.tsx"])
-    assert [e for e in errors if "tsc" in e] == []
-    assert (root / "node_modules/dep/index.d.ts").is_file()
-
-
-def test_a_missing_tool_fails_instead_of_passing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, base = _repository(tmp_path, {"a.cpp": "int f() { return 1; }\n"})
-    (root / "a.cpp").write_text("int f() { return 2; }\n")
-    which = standards.shutil.which
-
-    def without_clang_tidy(tool: str, path: str | None = None) -> str | None:
-        return None if tool == "clang-tidy" else which(tool, path=path)
-
-    monkeypatch.setattr(standards.shutil, "which", without_clang_tidy)
-    assert standards.style_errors(root, base, ["a.cpp"]) == [
-        "C++ needs clang-tidy; install it with sudo apt install clang-tidy."
-    ]
-
-
-def test_a_deleted_file_needs_no_tool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, base = _repository(tmp_path, {"a.cpp": "int f();\n"})
-    (root / "a.cpp").unlink()
-    monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
-    assert standards.style_errors(root, base, ["a.cpp"]) == []
-
-
-# Reversed, so this file itself leaks nothing.
-_LEAK = "vA0jG5sF1dH6cN4bY7rX2wP9mLk3Tv8qZ"[::-1]
-# A violation per checker, inline; its finding must map to a guideline.
-FIRES = [
-    ("general", "gitleaks", "a.txt", f'api_key = "{_LEAK}"\n'),
-    ("cpp", "clang-tidy", "a.cpp", "struct N {};\nN* make() { return new N; }\n"),
-    ("rst", "vale", "a.rst", "The change is measured by the gate.\n"),
-    ("rst", "codespell", "a.rst", "The gate measures teh change.\n"),
-    ("rst", "doc8", "a.rst", "The gate measures the change.   \n"),
-    ("typescript", "eslint", "a.ts", "var count = 1;\nexport const same = count == 1;\n"),
-    ("typescript", "tsc", "a.ts", "export function area(w, h) {\n  return w * h;\n}\n"),
-]  # fmt: skip
-
-
-@pytest.mark.parametrize(("language", "tool", "name", "text"), FIRES)
-def test_each_checker_flags_a_violation_its_guidelines_map(
-    tmp_path: Path, language: str, tool: str, name: str, text: str
-) -> None:
-    """The real tool runs, its check pattern parses, a guideline maps it.
-
-    A missing tool skips, unless ``REQUIRE_CHECKERS`` is set (the instance
-    job of CI installs them all).
-    """
-    loaded = standards.load()[language]
-    (check,) = [c for c in loaded.checkers() if c.tool == tool]
-    _write(tmp_path / name, text)
-    _write(
-        tmp_path / "build" / "compile_commands.json",
-        json.dumps(
-            [
-                {
-                    "directory": str(tmp_path),
-                    "file": str(tmp_path / name),
-                    "command": f"c++ -std=c++20 -c {tmp_path / name}",
-                }
-            ]
-        ),
-    )
-    try:
-        found = standards.findings(
-            check, loaded.title, tmp_path, [name], tmp_path
-        )
-    except standards.ToolMissingError:
-        if os.environ.get("REQUIRE_CHECKERS"):
-            raise
-        pytest.skip(f"{tool} is not installed")
-    assert any(
-        standards.matches(entry, tool, v.check)
-        for v in found
-        for g in loaded.guidelines
-        for entry in g.checked_by
-    ), found
-
-
 def test_the_graph_mirrors_the_files_and_reports_coherence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     instance = _instance(monkeypatch, tmp_path)
-    tools = instance / "languages" / "cpp" / "tools.toml"
-    tools.write_text(
-        tools.read_text() + '\n[unused]\nrole = "checker"\nrun = "true"\n'
+    _organization(
+        monkeypatch,
+        tmp_path,
+        "LINTERS:\n  CPP_UNUSED:\n    language: cpp\n    aliases: [unused]\n"
+        "    command: 'true'\n",
     )
     _language(instance / "languages" / "empty", "")
     monkeypatch.setattr(standards, "LOOPS", ["planner", "feature_implementer"])
@@ -671,7 +304,6 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
         "tool",
         "loop",
         "metric",
-        "source",
     }
     raii = graph.nodes["guideline:cpp-core-guidelines/R.1"]
     assert raii.parent == "language:cpp"
@@ -692,15 +324,8 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
         "tool:cpp/clang-tidy",
         "checked_by",
     ) in edges
-    assert (
-        "guideline:cpp-core-guidelines/R.1",
-        "source:stroustrup-sutter-2026",
-        "cites",
-    ) in edges
     assert ("metric:cc_max", "loop:feature_implementer", "judges") in edges
-    assert ("metric:cc_max", "source:mccabe-tse1976", "cites") in edges
     assert ("metric:cc_max", "tool:general/radon", "measured_by") in edges
-    assert ("tool:cpp/clang-tidy", "source:llvm-project-2026", "cites") in edges
     assert (
         "guideline:google-python/3.18",
         "metric:new complexity",
@@ -715,6 +340,10 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
     findings = {(f.rule, f.message) for f in standards.coherence(graph)}
     assert findings == {
         ("tools", "checker cpp/unused runs, but no guideline names it."),
+        (
+            "tools",
+            "checker python/ruff-format runs, but no guideline names it.",
+        ),
         ("guidelines", "language empty has no guidelines."),
     }
     page = standards.graph_page(graph, "target")
@@ -731,7 +360,6 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
         "kind",
         "advisory",
         "link",
-        "cite",
         "details",
         "checked_by",
         "path",
@@ -780,32 +408,6 @@ def test_the_page_opens_on_the_guidelines_table_with_tabs_and_legend() -> None:
         assert f"cdn.jsdelivr.net/npm/{library}/" in page
 
 
-def test_only_the_instance_s_literature_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    instance = _instance(monkeypatch, tmp_path)
-    folder = _language(
-        instance / "languages" / "x",
-        '["house/a"]\ntext = "A"\ncite = "found-2026"\n',
-    )
-    before = standards.graph_page(standards.graph(), "t")
-    found = "@misc{found-2026,\n  author = {A},\n  title = {T},\n"
-    found += "  year = {2026}\n}\n"
-    _write(tmp_path / "discovered" / "literature" / "discovered.bib", found)
-    assert standards.graph_page(standards.graph(), "t") == before
-    assert any(
-        "unknown cite key 'found-2026'" in e for e in standards.lint_all()
-    )
-    bib = instance / "literature.bib"
-    bib.write_text(bib.read_text() + "\n" + found)
-    assert not any(
-        "found-2026" in e for e in standards.lint(standards.parse(folder, "x"))
-    )
-    # The map and its checks never read the loops' records.
-    for module in (Path(standards.__file__), standards.GRAPH_PAGE):
-        assert "discovered" not in module.read_text()
-
-
 def test_check_and_show(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -838,15 +440,6 @@ def test_check_and_show(
     assert page.read_text().startswith("<!doctype html>")
 
 
-def test_a_finding_names_one_path_after_a_preamble() -> None:
-    output = (
-        "Scanning...\nValidating...\ndocs/a.rst:1: D002 Trailing whitespace\n"
-    )
-    assert [m["path"] for m in standards.FINDING.finditer(output)] == [
-        "docs/a.rst"
-    ]
-
-
 def test_a_metric_names_only_declared_measurers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -860,20 +453,6 @@ def test_a_metric_names_only_declared_measurers(
         "metrics.toml: cc_over_10 is measured by 'lizard', which "
         "general/tools.toml does not declare as a measurer."
     ]
-
-
-def test_check_branch_runs_the_gate_check_on_hand_made_changes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """``check-branch`` reports and fails on new findings only."""
-    root, base = _repository(tmp_path, {"legacy.py": CLEAN})
-    (root / "clean.py").write_text(CLEAN)
-    arguments = ["--root", str(root), "check-branch", "--base", base]
-    assert cli.main(arguments) == 0
-    assert capsys.readouterr().out == "no new findings\n"
-    (root / "new.py").write_text(CLEAN + VIOLATION)
-    assert cli.main(arguments) == 1
-    assert "new.py gains ruff findings (0 -> 1)" in capsys.readouterr().out
 
 
 def test_judged_by_names_a_metric(
@@ -902,54 +481,26 @@ COMPLEX = (
 )
 
 
-def test_no_new_or_changed_function_above_the_complexity_limit(
-    tmp_path: Path,
+def test_types_are_recognised_and_their_configs_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root, base = _repository(tmp_path, {"old.py": COMPLEX})
-    (root / "old.py").write_text(COMPLEX + "\n\nVALUE = 1\n")
-    assert standards.complexity_errors(root, base, ["old.py"]) == []
-    # Reformatting or documenting a function does not change it.
-    reformatted = COMPLEX.replace("return 1\n", "return (1)\n")
-    documented = reformatted.replace(":\n", ':\n    """Branch."""\n', 1)
-    documented += 'def split(x: int) -> str:\n    return f"a {x} b" f"c"\n'
-    (root / "old.py").write_text(
-        documented.replace('f"a {x} b" f"c"', 'f"a {x} bc"')
-    )
-    _git(root, "commit", "-qam", "split")
-    base = _git(root, "rev-parse", "HEAD").strip()
-    (root / "old.py").write_text(documented)
-    assert standards.complexity_errors(root, base, ["old.py"]) == []
-    (root / "old.py").write_text(COMPLEX.replace("return -1", "return -2"))
-    (root / "new.py").write_text(COMPLEX)
-    (root / "tests").mkdir()
-    (root / "tests" / "test_new.py").write_text(COMPLEX)
-    changed = ["new.py", "old.py", "tests/test_new.py"]
-    assert standards.complexity_errors(root, base, changed) == [
-        "new.py: branchy has cyclomatic complexity 12 > 10; "
-        "split it into smaller functions.",
-        "old.py: branchy has cyclomatic complexity 12 > 10; "
-        "split it into smaller functions.",
-    ]
-
-
-def test_docstrings_are_not_required_in_tests(tmp_path: Path) -> None:
-    root, base = _repository(tmp_path, {"tests/test_a.py": CLEAN})
-    (root / "tests" / "test_a.py").write_text(
-        CLEAN + "\n\ndef test_b() -> None:\n    pass\n"
-    )
-    assert standards.changed_errors(root, base) == []
-
-
-def test_types_are_recognised_and_their_configs_synced(tmp_path: Path) -> None:
+    # Offline: the written standards.yml extends the local org file.
+    monkeypatch.setattr(cli, "ORGANIZATION_URL", str(config.ORGANIZATION))
     (tmp_path / "pyproject.toml").write_text("")
     assert cli.types_of(tmp_path) == []
     (tmp_path / "uv.lock").write_text("")
     assert cli.types_of(tmp_path) == ["python-package"]
-    assert cli.sync(tmp_path, check=True) == ["pyrightconfig.json", "ruff.toml"]
+    assert cli.sync(tmp_path, check=True) == ["ruff.toml", "pyrightconfig.json"]
     assert cli.sync(tmp_path, check=False) == [
-        "pyrightconfig.json",
         "ruff.toml",
+        "pyrightconfig.json",
+        "standards.yml",
     ]
+    assert (
+        (tmp_path / "standards.yml")
+        .read_text()
+        .endswith(f"EXTENDS: {config.ORGANIZATION}\n")
+    )
     assert cli.sync(tmp_path, check=True) == []
     (tmp_path / "ruff.toml").write_text("line-length = 120\n")
     assert cli.main(["--root", str(tmp_path), "sync", "--check"]) == 1
@@ -1069,11 +620,12 @@ def test_coverage_counts_checked_rules_and_names_unmapped_checks(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     python = _instance(monkeypatch, tmp_path) / "languages" / "python"
-    tools = python / "tools.toml"
-    tools.write_text(
-        tools.read_text()
-        + '\n[lister]\nrole = "checker"\nrun = "true"\n'
-        + 'list = "printf \'N802\\\\nZ999\\\\n\'"\nlink = "https://x.org"\n'
+    _organization(
+        monkeypatch,
+        tmp_path,
+        "LINTERS:\n  PYTHON_LISTER:\n    language: python\n"
+        "    aliases: [lister]\n    command: 'true'\n"
+        "    list: printf 'N802\\nZ999\\n'\n    link: https://x.org\n",
     )
     overlay = python / "overlay.toml"
     overlay.write_text(
