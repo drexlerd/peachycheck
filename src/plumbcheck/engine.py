@@ -27,7 +27,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import tomllib
 import urllib.request
 from collections import Counter
@@ -1010,7 +1009,7 @@ def _functions(source: str) -> dict[str, tuple[int, str]]:
     blocks: list[dict[str, Any]] = json.loads(found.stdout).get(str(path), [])
     if isinstance(blocks, dict):
         raise SyntaxError(str(blocks))  # radon reports {"error": ...}
-    lines = source.splitlines()
+    shapes = _shapes(ast.parse(source))
     functions: dict[str, tuple[int, str]] = {}
     for b in blocks:
         if b["type"] in ("function", "method"):
@@ -1019,30 +1018,30 @@ def _functions(source: str) -> dict[str, tuple[int, str]]:
                 if b.get("classname")
                 else b["name"]
             )
-            text = "\n".join(lines[b["lineno"] - 1 : b["endline"]])
-            functions[name] = (int(b["complexity"]), _shape(text))
+            functions[name] = (int(b["complexity"]), shapes.get(name, ""))
     return functions
 
 
-def _shape(text: str) -> str:
-    """A function's syntax without docstrings.
+def _shapes(tree: ast.Module) -> dict[str, str]:
+    """The syntax of each function and method without docstrings, by name.
 
     Reformatting or documenting a function does not change it.
     """
-    try:
-        tree = ast.parse(textwrap.dedent(text))
-    except SyntaxError:
-        return text
-    documented = (
-        ast.Module,
-        ast.ClassDef,
-        ast.FunctionDef,
-        ast.AsyncFunctionDef,
-    )
+    documented = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     for node in ast.walk(tree):
         if isinstance(node, documented) and ast.get_docstring(node) is not None:
             node.body = node.body[1:]
-    return ast.dump(tree)
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    found: dict[str, str] = {}
+    for node in tree.body:
+        members = node.body if isinstance(node, ast.ClassDef) else []
+        prefix = f"{node.name}." if isinstance(node, ast.ClassDef) else ""
+        for f in [node, *members]:
+            if isinstance(f, functions):
+                found[prefix + f.name if f is not node else f.name] = ast.dump(
+                    f
+                )
+    return found
 
 
 def complexity_errors(
