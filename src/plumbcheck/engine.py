@@ -3,10 +3,18 @@
 The instance is the folder ``standards/`` of ``verdog-ai/standards``, which the
 user selects and no loop changes; this module only interprets it. Each
 language has a folder ``languages/<language>/`` with ``language.toml`` (title,
-extensions, project marker, test globs), ``guidelines.toml`` (one table per
-guideline) and ``tools.toml`` (its checkers). ``general/`` holds the
-guidelines and tools for every repository, ``metrics.toml`` the code metrics
-and ``literature.bib`` the literature guidelines and metrics may cite.
+extensions, project marker, test globs), ``overlay.toml`` (what it adds to the
+rules of its guides, and its house rules) and ``tools.toml`` (its checkers).
+``general/`` holds the house rules and tools for every repository,
+``sources.toml`` the guides the guidelines derive from (see ``sources``),
+``metrics.toml`` the code metrics and ``literature.bib`` the literature
+guidelines and metrics may cite.
+
+A guideline is a rule of a guide, named by its index id
+(``cpp-core-guidelines/R.20``) and curated in the overlay, or a house rule
+(``house/<id>`` in the overlay, ``<language>/<id>`` as its key). The prompt
+shows three levels: each active guide's top sections and the curated rules
+with their leaves; the agent looks up the levels below.
 
 A consumer such as auto-se adds what concerns only itself through ``LAYERS``
 (extra ``<kind>.toml`` and ``general/tools.toml`` roots), ``LOOPS``,
@@ -18,6 +26,7 @@ none, and a changed file may not gain any compared with the base.
 
 import ast
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -28,12 +37,11 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import urllib.request
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from verdog_standards import sources
 
@@ -78,6 +86,10 @@ LANGUAGE_FIELDS: Final = {
 # A language applies to files with its extensions, or, by ``marker``, to every
 # repository that has its marker file (Verdog: ``project.json``).
 ACTIVATIONS: Final = ("extension", "marker")
+# The fields of an overlay table. ``checked_by`` names ``tool`` or
+# ``tool:check`` (a glob such as ``ruff:D*``); ``priority`` lists the
+# guideline in the prompt, lowest first; ``see`` points a house rule at a rule
+# of a guide.
 GUIDELINE_FIELDS: Final = {
     "text": str,
     "kind": str,
@@ -87,19 +99,15 @@ GUIDELINE_FIELDS: Final = {
     "good": str,
     "bad": str,
     "details": str,
-    "checked_by": str,
+    "checked_by": list,
     "judged_by": str,
-    "reference": str,
+    "priority": int,
+    "see": str,
 }
-# A pinned guide's sections: Markdown and HTML headings, ``<a name|id>``
-# anchors and ``{#id}`` attributes, and reStructuredText titles and labels.
-MD_HEADING: Final = re.compile(r"^(#{1,6})\s+(.*?)\s*(?:\{#([\w-]+)\})?\s*$")
-HTML_HEADING: Final = re.compile(r"<h([1-6])\b([^>]*)>(.*?)</h\1>")
-ANCHOR: Final = re.compile(r'<a (?:name|id)="([^"]+)"')
-RST_UNDERLINE: Final = re.compile(r'^([=\-~^"`+*#])\1{2,}\s*$')
-RST_LABEL: Final = re.compile(r"^\.\. _([\w-]+):\s*$")
+OVERLAY: Final = "overlay.toml"
+HOUSE: Final = "house"  # the overlay's own rules: ``house/<id>``
 REFERENCES: Final = "references"
-SECTION_CHARS: Final = 4000  # of a referenced section, shown on the map
+SECTION_CHARS: Final = 4000  # of a rule's text, shown on the map
 # Where a target repository's worktree gets the pinned guides it may read.
 WORKTREE_REFERENCES: str = (
     ".verdog-standards/references"  # a consumer may move it
@@ -113,6 +121,7 @@ TOOL_FIELDS: Final = {
     "link": str,
     "cite": str,
     "exclude": list,
+    "list": str,
 }
 COMPLEXITY_LIMIT: Final = 10  # McCabe's threshold, as the gate's rule
 # A finding of a checker: ``path:line[:column]: ...``, except clang's notes.
@@ -143,11 +152,14 @@ class Check:
 
 @dataclass(frozen=True, slots=True)
 class Guideline:
-    """One guideline: a table of a language's ``guidelines.toml``."""
+    """One guideline: a table of a language's ``overlay.toml``.
+
+    ``id`` is the table's key: a rule's index id, or ``house/<id>``.
+    """
 
     language: str
     id: str
-    text: str
+    text: str = ""
     path: str = ""
     line: int = 1
     kind: str = "coding"
@@ -157,15 +169,35 @@ class Guideline:
     good: str = ""
     bad: str = ""
     details: str = ""
-    checked_by: str = ""
+    checked_by: tuple[str, ...] = ()
     judged_by: str = ""
-    reference: str = ""
+    priority: int = 0
+    see: str = ""
     errors: tuple[str, ...] = ()
 
     @property
+    def source(self) -> str:
+        """``house``, or the id of the guide whose rule this is."""
+        return self.id.partition("/")[0]
+
+    @property
     def key(self) -> str:
-        """The guideline's unique name, ``<language>/<id>``."""
-        return f"{self.language}/{self.id}"
+        """The unique name: ``<language>/<id>`` of a house rule, else its id."""
+        if self.source == HOUSE:
+            return f"{self.language}/{self.id.partition('/')[2]}"
+        return self.id
+
+    @property
+    def tools(self) -> tuple[str, ...]:
+        """The checkers ``checked_by`` names."""
+        return tuple(
+            dict.fromkeys(c.partition(":")[0] for c in self.checked_by)
+        )
+
+    @property
+    def rule(self) -> str:
+        """The index id of the rule whose leaf holds this guideline's text."""
+        return self.see if self.source == HOUSE else self.id
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +218,7 @@ class Tool:
     link: str = ""
     cite: str = ""
     exclude: tuple[str, ...] = ()
+    list: str = ""  # a command printing the checks the checker runs
     retrieval: dict[str, dict[str, Any]] = field(
         default_factory=dict[str, dict[str, Any]]
     )
@@ -221,7 +254,7 @@ class Language:
                 ok=tool.ok,
                 exclude=tool.exclude,
                 guidelines=tuple(
-                    g.key for g in self.guidelines if g.checked_by == tool.name
+                    g.key for g in self.guidelines if tool.name in g.tools
                 ),
             )
             for tool in self.tools
@@ -241,6 +274,7 @@ class Activation:
     checks: tuple[Check, ...] = ()
     guidelines: tuple[dict[str, Any], ...] = ()
     sha256: str = ""
+    guides: tuple[dict[str, Any], ...] = ()
 
 
 type Standards = dict[str, Language]
@@ -284,16 +318,13 @@ def _guideline(
     language: str, name: str, table: dict[str, Any], where: str, text: str
 ) -> Guideline:
     errors = _field_errors(table, GUIDELINE_FIELDS, f"{language}/{name}")
-    if not GUIDELINE_ID.fullmatch(name):
-        errors.append(
-            f"{language}/{name}: the id must match {GUIDELINE_ID.pattern}"
-        )
-    if not isinstance(table.get("text"), str) or not table["text"].strip():
-        errors.append(f"{language}/{name}: a guideline needs a text")
+    errors += _key_errors(f"{language}/{name}", name, table)
     if table.get("kind", "coding") not in KINDS:
         errors.append(f"{language}/{name}: kind must be one of {KINDS}")
-    known = {
-        k: v for k, v in table.items() if k in GUIDELINE_FIELDS and not errors
+    known: dict[str, Any] = {
+        k: tuple(cast(list[str], v)) if k == "checked_by" else v
+        for k, v in table.items()
+        if k in GUIDELINE_FIELDS and not errors
     }
     return Guideline(
         language=language,
@@ -304,6 +335,21 @@ def _guideline(
         errors=tuple(errors),
         **{k: v for k, v in known.items() if k != "text"},
     )
+
+
+def _key_errors(subject: str, name: str, table: dict[str, Any]) -> list[str]:
+    """A key is ``house/<id>`` with a text, or ``<guide>/<rule id>``."""
+    source, _, rule = name.partition("/")
+    if not rule:
+        return [f"{subject}: the key must be house/<id> or <guide>/<rule>"]
+    if source != HOUSE:
+        return []
+    errors: list[str] = []
+    if not GUIDELINE_ID.fullmatch(rule):
+        errors.append(f"{subject}: the id must match {GUIDELINE_ID.pattern}")
+    if not str(table.get("text", "")).strip():
+        errors.append(f"{subject}: a house rule needs a text")
+    return errors
 
 
 def _tool(
@@ -329,6 +375,7 @@ def _tool(
         link=str(table.get("link", "")),
         cite=str(table.get("cite", "")),
         exclude=tuple(str(g) for g in table.get("exclude", ())),
+        list=str(table.get("list", "")),
         retrieval={
             k: dict(v) for k, v in table.items() if k not in TOOL_FIELDS
         },
@@ -365,7 +412,7 @@ def _header_errors(
 def parse(folder: Path, name: str) -> Language:
     """The language in ``folder``; ``ValueError`` on a TOML syntax error."""
     header, header_text = _read(folder / "language.toml")
-    found, text = _read(folder / "guidelines.toml")
+    found, text = _read(folder / OVERLAY)
     tools, tools_text = _read(folder / "tools.toml")
     where = str(folder / "language.toml")
     activates = str(header.get("activates", "extension"))
@@ -379,9 +426,7 @@ def parse(folder: Path, name: str) -> Language:
         tests=tuple(header.get("tests", ())),
         activates=activates,
         guidelines=tuple(
-            _guideline(
-                name, key, dict(table), str(folder / "guidelines.toml"), text
-            )
+            _guideline(name, key, dict(table), str(folder / OVERLAY), text)
             for key, table in found.items()
         ),
         tools=tuple(
@@ -515,173 +560,117 @@ def select(
     ]
 
 
-def sections(path: Path) -> dict[str, str]:
-    """The sections of a pinned guide by anchor.
-
-    A section runs to the next heading of the same or a higher level; a
-    heading also answers to its title's slug.
-    """
-    lines = path.read_text().splitlines()
-    heads: list[tuple[int, int, set[str]]] = []
-    pending: list[str] = []
-    order: list[str] = []
-    rst = path.suffix == ".rst"
-    for i, line in enumerate(lines):
-        pending += ANCHOR.findall(line)
-        if rst and (label := RST_LABEL.match(line)):
-            pending.append(label[1])
-            continue
-        start, level, title, names = (
-            _rst_heading(lines, i, order) if rst else _heading(line, i)
-        )
-        if level:
-            heads.append((start, level, {*pending, *names, _slug(title)}))
-            pending = []
-    found: dict[str, str] = {}
-    for n, (start, level, names) in enumerate(heads):
-        end = next(
-            (s for s, deeper, _ in heads[n + 1 :] if deeper <= level), None
-        )
-        for name in names:
-            found.setdefault(name, "\n".join(lines[start:end]))
-    return found
-
-
-Heading = tuple[int, int, str, list[str]]  # start line, level, title, anchors
-
-
-def _heading(line: str, i: int) -> Heading:
-    """A Markdown or HTML heading at line ``i``; level 0 if none."""
-    if md := MD_HEADING.match(line):
-        return i, len(md[1]), md[2], [md[3]] if md[3] else []
-    if html := HTML_HEADING.search(line):
-        return i, int(html[1]), html[3], re.findall(r'id="([^"]+)"', html[2])
-    return i, 0, "", []
-
-
-def _rst_heading(lines: list[str], i: int, order: list[str]) -> Heading:
-    """A reST heading underlined at line ``i``; ``order`` ranks underlines."""
-    line = lines[i]
-    above = lines[i - 1].strip() if i else ""
-    if not (RST_UNDERLINE.match(line) and above) or above.startswith(".."):
-        return i, 0, "", []
-    if RST_UNDERLINE.match(above):
-        return i, 0, "", []
-    if line[0] not in order:
-        order.append(line[0])
-    return i - 1, order.index(line[0]) + 1, above, []
-
-
-def _slug(title: str) -> str:
-    plain = re.sub(r"<[^>]+>|\{#[^}]*\}|`", "", title).lower()
-    return re.sub(r"[^a-z0-9]+", "-", plain).strip("-")
-
-
-def guide(language: Language, file: str) -> Path | None:
-    """A pinned guide of ``language``: committed, or fetched into the cache.
-
-    A guide whose license forbids a public copy is named in
-    ``references/downloads.toml`` with its URL and sha256 and is fetched once.
-    """
-    path = Path(language.path) / file
-    if path.is_file():
-        return path
-    folder = Path(language.path) / REFERENCES
-    pinned, _ = _read(folder / "downloads.toml")
-    name = (
-        Path(file).relative_to(REFERENCES).as_posix()
-        if file.startswith(REFERENCES)
-        else file
-    )
-    entry = pinned.get(name)
-    if entry is None:
-        return None
-    cached = CACHE.expanduser() / language.id / name
-    if not cached.is_file():
-        with urllib.request.urlopen(str(entry["url"]), timeout=60) as response:
-            data = response.read()
-        if hashlib.sha256(data).hexdigest() != entry["sha256"]:
-            raise ValueError(f"{file}: download does not match its sha256")
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
-    return cached
-
-
-def section(language: Language, reference: str) -> str | None:
-    """The text of ``reference`` (``<file>#<anchor>``) of ``language``."""
-    file, _, anchor = reference.partition("#")
-    try:
-        path = guide(language, file)
-    except OSError:
-        return (
-            None  # ponytail: offline and not cached yet; the map shows no text
-        )
-    return sections(path).get(anchor) if path is not None else None
-
-
-def pointer(language: Language, guideline: Guideline, root: Path) -> str:
-    """Where the agent working in ``root`` reads ``guideline``'s rule, or "".
-
-    The standards repository reads its own ``standards/``; another repository
-    reads the copies ``copy_references`` put into its worktree.
-    """
-    if not guideline.reference:
-        return ""
-    file, _, anchor = guideline.reference.partition("#")
-    folder = Path(language.path).relative_to(STANDARDS.parent)
-    where = (
-        folder / file
-        if (root / folder).is_dir()
-        else Path(
-            WORKTREE_REFERENCES, language.id, Path(file).relative_to(REFERENCES)
-        )
-    )
-    text = section(language, guideline.reference) or ""
-    title = re.sub(r"<[^>]+>|^#+\s*", "", text.splitlines()[0] if text else "")
-    rule = title.split(":")[0].strip() if ":" in title[:12] else ""
-    return f"{rule} in {where}#{anchor}" if rule else f"{where}#{anchor}"
-
-
-def copy_references(root: Path) -> None:
-    """Copy the pinned guides into ``root``'s ignored ``WORKTREE_REFERENCES``.
-
-    An agent in another repository then reads them offline, downloads included.
-    """
-    for language in load().values():
-        source = Path(language.path) / REFERENCES
-        if source.is_dir():
-            target = root / WORKTREE_REFERENCES / language.id
-            shutil.copytree(source, target, dirs_exist_ok=True)
-            for g in language.guidelines:
-                found = (
-                    guide(language, g.reference.partition("#")[0])
-                    if g.reference
-                    else None
-                )
-                if found is not None and not found.is_relative_to(source):
-                    shutil.copy2(found, target / found.name)
-
-
 def guides() -> dict[str, sources.Source]:
     """The guides of ``sources.toml``, by id."""
     return sources.manifest(STANDARDS)
 
 
-def generate(source: sources.Source) -> list[sources.Rule]:
-    """Write ``source``'s tree from its pinned copy; return its index."""
+def curations(source: sources.Source) -> dict[str, sources.Curation]:
+    """What the overlay of ``source``'s language adds to its rules."""
+    language = load().get(source.language)
+    return {
+        g.id: sources.Curation(g.checked_by, g.good, g.bad)
+        for g in (language.guidelines if language else ())
+        if g.source == source.id
+    }
+
+
+def _render(
+    source: sources.Source,
+) -> tuple[Path, dict[str, str], list[sources.Rule]]:
+    """The folder, files and index of ``source``'s tree, from its copy."""
     folder = sources.tree_folder(source, STANDARDS, CACHE)
     copy = sources.fetch(source, folder)
-    files, rules = sources.render(source, copy, {})
-    sources.write(folder, files)
+    examples = f"standards/{LANGUAGES}/{source.language}"
+    files, rules = sources.render(source, copy, curations(source), examples)
+    return folder, files, rules
+
+
+def generate(source: sources.Source) -> list[sources.Rule]:
+    """Write ``source``'s tree from its pinned copy; return its index."""
+    folder, files, rules = _render(source)
+    stamp = {STAMP: _stamp(source)} if source.store == "cache" else {}
+    sources.write(folder, {**files, **stamp})
     return rules
 
 
+STAMP: Final = ".generated"  # what a cached tree was generated from
+
+
+def _stamp(source: sources.Source) -> str:
+    """The generator and overlay a tree derives from, as a digest."""
+    data = (
+        Path(sources.__file__).read_bytes() + repr(curations(source)).encode()
+    )
+    return hashlib.sha256(data).hexdigest() + "\n"
+
+
 def tree(source: sources.Source) -> Path:
-    """The folder of ``source``'s tree; a cached one is generated on first use."""
+    """The folder of ``source``'s tree.
+
+    A cached tree is generated on first use and again when the generator or
+    the overlay changed; a committed one is as committed.
+    """
     folder = sources.tree_folder(source, STANDARDS, CACHE)
-    if not (folder / sources.INDEX_TOML).is_file():
-        generate(source)
+    if source.store == "cache":
+        stamp = folder / STAMP
+        if not stamp.is_file() or stamp.read_text() != _stamp(source):
+            generate(source)
     return folder
+
+
+def index(source: sources.Source) -> dict[str, sources.Rule]:
+    """The entries of ``source``'s tree by id; ``OSError`` when unreadable."""
+    path = tree(source) / sources.INDEX_TOML
+    return _index(str(path), path.stat().st_mtime)
+
+
+@functools.cache
+def _index(path: str, mtime: float) -> dict[str, sources.Rule]:
+    del mtime  # part of the cache's key only
+    return {r.id: r for r in sources.read_index(Path(path).parent)}
+
+
+def rule(name: str) -> sources.Rule | None:
+    """The index entry ``name`` (``cpp-core-guidelines/R.20``), if readable."""
+    source = guides().get(name.partition("/")[0])
+    try:
+        return index(source).get(name) if source else None
+    except (OSError, ValueError):
+        return None  # ponytail: offline and not cached; shown without its text
+
+
+def location(root: Path, source: sources.Source, path: str) -> str:
+    """Where an agent working in ``root`` opens ``path`` of ``source``'s tree.
+
+    The standards repository reads its committed trees; another repository
+    reads the copies ``copy_references`` put into its worktree.
+    """
+    folder = sources.tree_folder(source, STANDARDS, CACHE)
+    if source.store == "commit" and folder.is_relative_to(STANDARDS.parent):
+        mine = folder.relative_to(STANDARDS.parent)
+        if (root / mine).is_dir():
+            return (mine / path).as_posix()
+    return Path(WORKTREE_REFERENCES, source.id, path).as_posix()
+
+
+def copy_references(root: Path) -> None:
+    """Copy every guide's tree into ``root``'s ignored ``WORKTREE_REFERENCES``.
+
+    An agent in another repository then reads them offline, cached ones
+    included; the pinned copies themselves stay behind.
+    """
+    for source in guides().values():
+        try:
+            folder = tree(source)
+        except (OSError, ValueError):
+            continue  # ponytail: offline and not cached; its rules show no leaf
+        shutil.copytree(
+            folder,
+            root / WORKTREE_REFERENCES / source.id,
+            ignore=shutil.ignore_patterns(sources.SOURCE, STAMP),
+            dirs_exist_ok=True,
+        )
 
 
 def source_errors() -> list[str]:
@@ -697,19 +686,19 @@ def source_errors() -> list[str]:
 
 
 def _tree_errors(source: sources.Source) -> list[str]:
-    folder = sources.tree_folder(source, STANDARDS, CACHE)
     try:
-        files, _ = sources.render(source, sources.fetch(source, folder), {})
+        folder, files, _ = _render(source)
     except (OSError, ValueError) as error:
         return [f"{MANIFEST_NAME}: {error}."]
     if source.store == "cache":
-        sources.write(folder, files)
+        sources.write(folder, {**files, STAMP: _stamp(source)})
         return []
     found = sources.stale(folder, files)
     return (
         [
             f"{source.id}: {len(found)} generated files differ from the "
-            f"source, such as {found[0]}; run `verdog-standards index`."
+            f"source and overlay, such as {found[0]}; run "
+            "`verdog-standards index`."
         ]
         if found
         else []
@@ -745,24 +734,70 @@ def _marked(standards: Standards, root: Path) -> list[str]:
 def _activation(
     language: Language, reasons: list[str], changed: set[str], root: Path
 ) -> Activation:
+    prompted = sorted(
+        (g for g in language.guidelines if g.priority),
+        key=lambda g: (g.priority, g.key),
+    )
     return Activation(
         language=language.id,
         title=language.title,
         reasons=tuple(reasons),
         files=tuple(sorted(changed)),
-        cite=tuple(sorted({g.cite for g in language.guidelines if g.cite})),
+        cite=tuple(sorted({g.cite for g in prompted if g.cite})),
         checks=tuple(language.checkers()),
-        guidelines=tuple(
-            {
-                **asdict(g),
-                "key": g.key,
-                "example": _example(language, g),
-                "pointer": pointer(language, g, root),
-            }
-            for g in language.guidelines
-        ),
+        guidelines=tuple(_prompted(language, g, root) for g in prompted),
         sha256=hashlib.sha256(language.text.encode()).hexdigest(),
+        guides=tuple(_guide_of(s, root) for s in _guides_of(language)),
     )
+
+
+def _guides_of(language: Language) -> list[sources.Source]:
+    return [s for s in guides().values() if s.language == language.id]
+
+
+def _guide_of(source: sources.Source, root: Path) -> dict[str, Any]:
+    """A guide as the prompt shows it: its notice and its top sections."""
+    try:
+        top = (tree(source) / sources.INDEX).read_text().splitlines()
+    except (OSError, ValueError):
+        top = []  # ponytail: offline and not cached; the prompt lists no sections
+    return {
+        "id": source.id,
+        "title": source.title,
+        "license": source.license,
+        "notice": sources.notice(source),
+        "root": location(root, source, ""),
+        "lines": [line for line in top if line.startswith("- ")],
+    }
+
+
+def resolved(
+    g: Guideline,
+) -> tuple[sources.Source | None, sources.Rule | None]:
+    """The guide and index entry whose leaf holds ``g``'s rule, if any."""
+    entry = rule(g.rule) if g.rule else None
+    return (
+        (guides().get(g.rule.partition("/")[0]), entry)
+        if entry
+        else (None, None)
+    )
+
+
+def _prompted(language: Language, g: Guideline, root: Path) -> dict[str, Any]:
+    """A guideline as the prompt shows it: its text, checkers and leaf."""
+    source, entry = resolved(g)
+    return {
+        **asdict(g),
+        "key": g.key,
+        "text": g.text or (entry.text if entry else g.id),
+        "checked_by": list(g.checked_by),
+        "tools": list(g.tools),
+        "enforcement": sources.enforcement(g.checked_by),
+        "pointer": location(root, source, entry.path)
+        if source and entry
+        else "",
+        "example": _example(language, g),
+    }
 
 
 def _example(language: Language, guideline: Guideline) -> str:
@@ -771,7 +806,7 @@ def _example(language: Language, guideline: Guideline) -> str:
     Only a guideline no guide covers and no checker enforces shows one (the
     Verdog JSON); checked examples are checker tests, guides carry their own.
     """
-    if guideline.checked_by or guideline.reference:
+    if guideline.checked_by or guideline.rule:
         return ""
     path = Path(language.path) / guideline.good
     return path.read_text().strip() if guideline.good and path.is_file() else ""
@@ -780,9 +815,10 @@ def _example(language: Language, guideline: Guideline) -> str:
 def for_loop(
     activations: Sequence[Activation], loop: str
 ) -> list[dict[str, Any]]:
-    """The guidelines ``loop`` sees: per language, coding then documentation.
+    """What ``loop`` sees: per language its guides, then its guidelines.
 
-    Every loop working on a language's files sees all its guidelines.
+    Every loop working on a language's files sees the top sections of its
+    guides and its curated guidelines, coding then documentation.
     """
     del loop
     groups = [
@@ -791,6 +827,7 @@ def for_loop(
             "title": a.title,
             "reasons": list(a.reasons),
             "cite": list(a.cite),
+            "guides": [dict(g) for g in a.guides],
             **{
                 kind: [g for g in a.guidelines if g["kind"] == kind]
                 for kind in KINDS
@@ -798,7 +835,7 @@ def for_loop(
         }
         for a in activations
     ]
-    return [g for g in groups if any(g[kind] for kind in KINDS)]
+    return [g for g in groups if g["guides"] or any(g[k] for k in KINDS)]
 
 
 def dump(activations: Sequence[Activation]) -> str:
@@ -830,6 +867,7 @@ def undump(record: str) -> list[Activation]:
             ),
             guidelines=tuple(dict(g) for g in item["guidelines"]),
             sha256=str(item["sha256"]),
+            guides=tuple(dict(g) for g in item.get("guides", ())),
         )
         for item in items
     ]
@@ -1202,18 +1240,43 @@ def _guideline_errors(
     checkers: set[str],
 ) -> list[str]:
     """What is wrong with guideline ``g`` beyond its fields' types."""
-    found = list(g.errors)
+    found = [*g.errors, *_named_errors(g, known, metrics)]
+    found += [
+        f"{g.key}: {tool!r} is not a checker of {language.id}"
+        for tool in g.tools
+        if tool not in checkers
+    ]
+    names = [g.id] if g.source != HOUSE else []
+    found += [
+        _rule_error(language, g, name) for name in [*names, g.see] if name
+    ]
+    return [f for f in found if f] + _missing_files(language, g)
+
+
+def _named_errors(
+    g: Guideline, known: set[str], metrics: Mapping[str, Any]
+) -> list[str]:
+    """A cite key not in the literature, a ``judged_by`` that is no metric."""
+    found: list[str] = []
     if g.cite and g.cite not in known:
         found.append(f"{g.key}: unknown cite key {g.cite!r}")
-    if g.checked_by and g.checked_by not in checkers:
-        found.append(
-            f"{g.key}: {g.checked_by!r} is not a checker of {language.id}"
-        )
     if g.judged_by and g.judged_by not in metrics:
         found.append(f"{g.key}: {g.judged_by!r} is not a metric")
-    if g.reference and section(language, g.reference) is None:
-        found.append(f"{g.key}: reference {g.reference} is not a section")
-    return found + _missing_files(language, g)
+    return found
+
+
+def _rule_error(language: Language, g: Guideline, name: str) -> str:
+    """Why ``name`` is no rule of a guide of ``language``, or ""."""
+    source = guides().get(name.partition("/")[0])
+    if source is None or source.language != language.id:
+        return (
+            f"{g.key}: {name.partition('/')[0]!r} is no guide of {language.id}"
+        )
+    try:
+        known = index(source)
+    except (OSError, ValueError) as error:
+        return f"{g.key}: the index of {source.id} cannot be read: {error}"
+    return "" if name in known else f"{g.key}: {name} is no rule of {source.id}"
 
 
 def _missing_files(language: Language, g: Guideline) -> list[str]:
@@ -1286,9 +1349,9 @@ def _example_failures(
         return [f"{g.key}: {missing}"]
     failures: list[str] = []
     if g.bad and not found["bad"]:
-        failures.append(f"{g.key}: {g.checked_by} does not flag {g.bad}.")
+        failures.append(f"{g.key}: {check.tool} does not flag {g.bad}.")
     if g.good and found["good"]:
-        failures.append(f"{g.key}: {g.checked_by} flags {g.good}.")
+        failures.append(f"{g.key}: {check.tool} flags {g.good}.")
     return failures
 
 
@@ -1299,10 +1362,119 @@ def example_tests(standards: Standards) -> list[str]:
         checks = {c.tool: c for c in language.checkers()}
         folder = Path(language.path).resolve()
         for g in language.guidelines:
-            check = checks.get(g.checked_by)
+            check = checks.get(g.tools[0]) if g.tools else None
             if check is not None and (g.good or g.bad):
                 failures += _example_failures(language, g, check, folder)
     return failures
+
+
+def matches(entry: str, tool: str, check: str) -> bool:
+    """Whether a ``checked_by`` entry (``tool`` or ``tool:glob``) covers it."""
+    name, _, pattern = entry.partition(":")
+    return name == tool and (not pattern or fnmatch.fnmatchcase(check, pattern))
+
+
+def coverage() -> str:
+    """The coverage of the guides by checkers, and its gaps.
+
+    Per guide and top section the rules a checker covers and the prose ones;
+    then the curated guidelines without a verified example or summary, and
+    the checks no guideline maps.
+    """
+    loaded = load()
+    lines = ["# Coverage of the guides", ""]
+    for source in guides().values():
+        lines += _guide_coverage(source, loaded[source.language])
+    lines += ["## Gaps", ""]
+    for language in loaded.values():
+        lines += _gaps(language) + _unmapped(language)
+    return "\n".join(lines) + "\n"
+
+
+def _guide_coverage(source: sources.Source, language: Language) -> list[str]:
+    head = [f"## {source.title} (`{source.id}`, {source.license})", ""]
+    try:
+        rules = index(source)
+    except (OSError, ValueError) as error:
+        return [*head, f"Cannot be read: {error}", ""]
+    checked = {g.id for g in language.guidelines if g.checked_by}
+    rows = ["| section | rules | checked | prose |", "|---|---|---|---|"]
+    by_top: dict[str, list[bool]] = {}
+    for r in rules.values():
+        if r.leaf:
+            by_top.setdefault(_top(r, rules), []).append(r.id in checked)
+    rows += [
+        f"| {rules[top].title} | {len(marks)} | {sum(marks)} | "
+        f"{len(marks) - sum(marks)} |"
+        for top, marks in by_top.items()
+    ]
+    return [*head, *rows, ""]
+
+
+def _top(entry: sources.Rule, rules: Mapping[str, sources.Rule]) -> str:
+    """The top section an entry belongs to, or the entry if it is one."""
+    while entry.parent:
+        entry = rules[entry.parent]
+    return entry.id
+
+
+def _gaps(language: Language) -> list[str]:
+    """Curated guidelines without a verified example or a summary."""
+    curated = [g for g in language.guidelines if g.priority]
+    found = [
+        f"- {g.key}: no verified example"
+        for g in curated
+        if g.checked_by and not (g.good or g.bad)
+    ]
+    return found + [
+        f"- {g.key}: no summary" for g in curated if _unsummarized(g)
+    ]
+
+
+def _unsummarized(g: Guideline) -> bool:
+    """A rule of a prose guide shown by its title alone.
+
+    A Core Guidelines rule's title is its one-line summary.
+    """
+    source, entry = resolved(g)
+    if g.text or g.source == HOUSE or source is None or entry is None:
+        return False
+    return source.parser != "core-guidelines" and entry.text == entry.title
+
+
+def _unmapped(language: Language) -> list[str]:
+    """The checks a checker lists that no guideline's ``checked_by`` maps."""
+    found: list[str] = []
+    for tool in (t for t in language.tools if t.list):
+        try:
+            checks = _listed(tool, language.title)
+        except (ToolMissingError, OSError) as missing:
+            found.append(f"- {language.id}/{tool.name}: not listed ({missing})")
+            continue
+        found += [
+            f"- {language.id}/{tool.name}: {check} maps to no guideline; "
+            f"see {tool.link}"
+            for check in checks
+            if not any(
+                matches(e, tool.name, check)
+                for g in language.guidelines
+                for e in g.checked_by
+            )
+        ]
+    return found
+
+
+def _listed(tool: Tool, title: str) -> list[str]:
+    """The checks ``tool.list`` prints, one per line."""
+    listing = Check(tool=tool.name, run=tool.list, env=tool.env)
+    result = subprocess.run(
+        command(listing, title, [], Path.cwd()),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": _search_path(), **tool.env},
+    )
+    names = (line.strip() for line in result.stdout.splitlines())
+    return sorted({n for n in names if re.fullmatch(r"[\w.-]+", n)})
 
 
 def loops() -> list[str]:
@@ -1434,27 +1606,42 @@ def _tool_node(graph: Graph, parent: str, tool: Tool) -> None:
 def _guideline_node(
     graph: Graph, parent: str, language: Language, g: Guideline
 ) -> None:
-    text = section(language, g.reference) if g.reference else ""
+    source, entry = resolved(g)
+    found = {"reference": "", "license": "", "attribution": "", "section": ""}
+    if source and entry:
+        found = {
+            "reference": f"{source.id}/{entry.path}",
+            "license": source.license,
+            "attribution": source.attribution,
+            "section": _leaf_text(source, entry)[:SECTION_CHARS],
+        }
+    data = {**asdict(g), "key": g.key, "errors": None, "tools": list(g.tools)}
+    # A cache-only guide's text, its rules' titles included, stays off the map.
+    public = source is not None and source.store == "commit"
+    text = g.text or (entry.text if entry and public else "")
     guideline = graph.add(
         Node(
             f"guideline:{g.key}",
             "guideline",
-            g.id,
+            g.key,
             parent,
-            {
-                **asdict(g),
-                "key": g.key,
-                "errors": None,
-                "section": (text or "")[:SECTION_CHARS],
-            },
+            {**data, **found, "text": text},
         )
     )
-    tool = f"tool:{language.id}/{g.checked_by}"
-    if g.checked_by and tool in graph.nodes:
-        graph.link(guideline, tool, "checked_by")
+    for tool in g.tools:
+        if f"tool:{language.id}/{tool}" in graph.nodes:
+            graph.link(guideline, f"tool:{language.id}/{tool}", "checked_by")
     if g.cite:
-        source = graph.shared("source", g.cite, kind="literature")
-        graph.link(guideline, source, "cites")
+        cited = graph.shared("source", g.cite, kind="literature")
+        graph.link(guideline, cited, "cites")
+
+
+def _leaf_text(source: sources.Source, entry: sources.Rule) -> str:
+    """A committed rule's leaf for the map; never a cache-only guide's."""
+    if source.store != "commit":
+        return ""
+    path = tree(source) / entry.path
+    return path.read_text() if path.is_file() else ""
 
 
 def _metric_node(graph: Graph, name: str, metric: dict[str, Any]) -> None:

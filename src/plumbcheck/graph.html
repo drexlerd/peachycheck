@@ -219,7 +219,7 @@ DATA.findings.forEach((f, i) => f.nodes.forEach(id => { if (!findingsByNode.has(
 const rows = DATA.nodes.filter(n => n.type === "guideline").map(n => {
   const language = nodes.get(n.parent);
   return { node: n, language: language.label, kind: n.data.kind, binding: n.data.advisory ? "advisory" : "binding",
-    tool: n.data.checked_by, source: targets(n.id, "cites").map(s => s.label) };
+    tool: (n.data.tools || [])[0] || "", source: targets(n.id, "cites").map(s => s.label) };
 }).sort((a, b) => (a.language === "general" ? -1 : b.language === "general" ? 1 : a.language.localeCompare(b.language)) || a.node.data.line - b.node.data.line);
 const FACETS = [["loop", () => allLoops], ["language", r => [r.language]], ["kind", r => [r.kind]], ["tool", r => r.tool ? [r.tool] : []],
   ["source", r => r.source], ["binding", r => [r.binding]]];
@@ -303,7 +303,7 @@ function guidelinesTable() {
     if (state.selected === r.node.id) tr.setAttribute("aria-selected", "true");
     cell(tr, [el("code", d.key), el("div", d.text, "text")]);
     cell(tr, [nodes.get(r.node.parent).data.title]); cell(tr, [r.kind]);
-    cell(tr, [d.advisory ? "advisory" : ""]); cell(tr, [d.checked_by || (d.judged_by ? "gate: " + d.judged_by : "")]);
+    cell(tr, [d.advisory ? "advisory" : ""]); cell(tr, [(d.checked_by || []).join(", ") || (d.judged_by ? "gate: " + d.judged_by : "")]);
     cell(tr, [[...r.source, ...(d.link ? ["link"] : [])].join(", ")]);
     cell(tr, [[d.good && "good", d.bad && "bad"].filter(Boolean).join(", ")]);
     cell(tr, [el("span", d.path.split("/").pop() + ":" + d.line, "mono")]);
@@ -561,14 +561,15 @@ function panel() {
   if (state.view === "graph" && children(id).length) { const b = el("button", "Open " + n.label + " (" + children(id).length + " inside)", "open"); b.onclick = () => open(id); p.append(b); }
   const dl = el("dl"), d = n.data;
   if (n.type === "guideline") {
-    const tool = d.checked_by && nodes.get("tool:" + d.language + "/" + d.checked_by);
+    const tool = (d.tools || []).length && nodes.get("tool:" + d.language + "/" + d.tools[0]);
     row(dl, "Text", d.text); row(dl, "Kind", d.kind + " (" + KIND_MEANING[d.kind] + ")");
     row(dl, "Binding", d.advisory ? "advisory: a recommendation" : "binds every loop that works on its files");
-    if (tool) row(dl, "Checked by", [link(tool), el("div", tool.data.run, "mono")]);
+    if (tool) row(dl, "Checked by", [link(tool), el("div", (d.checked_by || []).join(", "), "mono")]);
     const metric = d.judged_by && nodes.get("metric:" + d.judged_by);
     if (metric) row(dl, "Judged by", [link(metric), el("div", "the gate metric that enforces it")]);
     if (d.link) { const a = el("a", d.link); a.href = d.link; a.target = "_blank"; a.rel = "noopener"; row(dl, "Link", a); }
     row(dl, "Rule", d.reference, true);
+    row(dl, "License", [d.license, d.attribution].filter(Boolean).join(" · "));
     row(dl, "Sources", targets(n.id, "cites").map(s => link(s)));
     row(dl, "Examples", [d.good && "good: " + d.good, d.bad && "bad: " + d.bad].filter(Boolean).join(" · "), true);
     row(dl, "Details", d.details, true);
