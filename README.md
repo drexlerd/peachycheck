@@ -14,7 +14,7 @@ each repository uses the same rules, checkers and tool configurations.
 - `templates/<type>/`: the project types. `type.toml` names the marker files
   that recognise a type and the commands its check runs; `files/` holds the
   root tool configurations (`ruff.toml`, `pyrightconfig.json`,
-  `eslint.config.mjs`, `tsconfig.base.json`, `.clang-tidy`) every repository
+  `eslint.config.mjs`, `.clang-tidy`) every repository
   of that type shares.
 - `src/verdog_standards/`: the engine and the CLI `verdog-standards`.
 - `.github/workflows/check.yml`: the reusable workflow every repository calls.

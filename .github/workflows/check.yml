@@ -4,6 +4,9 @@
 #     standards:
 #       uses: verdog-ai/standards/.github/workflows/check.yml@main
 #
+# A repository with private submodules adds `secrets: inherit` and needs a
+# SUBMODULES_TOKEN secret that can read them.
+#
 # It recognises the repository's types, runs their commands, requires the
 # shared tool configurations and fails on new findings in changed files.
 name: Standards
@@ -15,6 +18,10 @@ on:
         description: The ref of verdog-ai/standards to check against.
         type: string
         default: main
+    secrets:
+      SUBMODULES_TOKEN:
+        description: "Reads private submodules; pass it with `secrets: inherit`."
+        required: false
 
 permissions:
   contents: read
@@ -29,14 +36,19 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
-      - if: hashFiles('package.json') != ''
+      - if: hashFiles('package.json') != '' && hashFiles('.nvmrc') == ''
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - if: hashFiles('.nvmrc') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
       - name: Install verdog-standards and its checkers
         run: |
           uv tool install "verdog-standards @ git+https://github.com/verdog-ai/standards@${STANDARDS_REF}"
