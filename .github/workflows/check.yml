@@ -35,9 +35,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
-          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
           persist-credentials: false
+      # The repository's own token reads only the repository itself; private
+      # submodules are read with SUBMODULES_TOKEN.
+      - name: Check out submodules
+        if: hashFiles('.gitmodules') != ''
+        env:
+          TOKEN: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+        run: >-
+          git -c "url.https://x-access-token:${TOKEN}@github.com/.insteadOf=https://github.com/"
+          submodule update --init --recursive
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
