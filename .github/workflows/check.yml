@@ -61,7 +61,10 @@ jobs:
         run: verdog-standards sync --check
       - name: The types' commands
         run: verdog-standards run
+      # Runs even when a command failed, so a reported build failure does not
+      # hide the findings.
       - name: No new findings in changed files
+        if: ${{ !cancelled() }}
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
