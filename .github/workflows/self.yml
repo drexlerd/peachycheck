@@ -1,0 +1,27 @@
+name: Self
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  standards:
+    uses: ./.github/workflows/check.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+  instance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get install -y clang-tidy
+      - run: uv sync --locked
+      - run: uv run --no-sync verdog-standards check --tests
