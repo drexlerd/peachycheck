@@ -41,10 +41,14 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
-      - if: hashFiles('package.json') != ''
+      - if: hashFiles('package.json') != '' && hashFiles('.nvmrc') == ''
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - if: hashFiles('.nvmrc') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
       - name: Install verdog-standards and its checkers
         run: |
           uv tool install "verdog-standards @ git+https://github.com/verdog-ai/standards@${STANDARDS_REF}"
