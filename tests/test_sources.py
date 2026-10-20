@@ -236,16 +236,17 @@ def test_every_committed_tree_is_generated_and_no_cached_guide_is_committed() ->
     # A rule's title after its id, such as "Use `unique_ptr` ...", from R.20.
     titles = {r.title.partition(": ")[2] for r in rules} - {""}
     quoted = re.compile("|".join(re.escape(t) for t in titles if len(t) > 24))
-    found = {
-        path: hit[0]
+    # Only paths: a failure must not print the guide's text in a public log.
+    found = [
+        path
         for path in tracked
         if "cpp-core-guidelines" in Path(path).parts
         or (
             (repository / path).is_file()
-            and (hit := quoted.search(_text(repository / path)))
+            and quoted.search(_text(repository / path))
         )
-    }
-    assert found == {}
+    ]
+    assert found == []
 
 
 def _text(path: Path) -> str:
