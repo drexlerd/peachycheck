@@ -1031,6 +1031,8 @@ def _shapes(tree: ast.Module) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, documented) and ast.get_docstring(node) is not None:
             node.body = node.body[1:]
+        if isinstance(node, ast.JoinedStr):
+            node.values = _merged(node.values)
     functions = (ast.FunctionDef, ast.AsyncFunctionDef)
     found: dict[str, str] = {}
     for node in tree.body:
@@ -1042,6 +1044,18 @@ def _shapes(tree: ast.Module) -> dict[str, str]:
                     f
                 )
     return found
+
+
+def _merged(values: list[ast.expr]) -> list[ast.expr]:
+    """An f-string's parts with adjacent text joined, as one literal has it."""
+    merged: list[ast.expr] = []
+    for value in values:
+        last = merged[-1] if merged else None
+        if isinstance(value, ast.Constant) and isinstance(last, ast.Constant):
+            merged[-1] = ast.Constant(str(last.value) + str(value.value))
+        else:
+            merged.append(value)
+    return merged
 
 
 def complexity_errors(
