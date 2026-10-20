@@ -373,6 +373,30 @@ def test_each_linter_flags_a_violation_its_guidelines_map(
         ), mine
 
 
+def test_a_cache_only_guide_s_rule_text_stays_out_of_the_report() -> None:
+    (owner,) = [
+        g
+        for g in engine.load()["cpp"].guidelines
+        if g.id == "cpp-core-guidelines/R.20"
+    ]
+    line = engine.rule_line(owner, Path.cwd())
+    entry = engine.rule(owner.id)
+    assert line.startswith(
+        "- cpp-core-guidelines/R.20: cpp-core-guidelines/R.20 ["
+    )
+    assert entry is None or entry.title not in line
+
+
+def test_the_base_is_the_merge_base_with_origin_main_without_origin_head(
+    tmp_path: Path,
+) -> None:
+    root, base = _repository(tmp_path, {"a.py": CLEAN})
+    _git(root, "update-ref", "refs/remotes/origin/main", base)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "work")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "more")
+    assert cli.base_of(root) == base
+
+
 # --- hooks
 
 

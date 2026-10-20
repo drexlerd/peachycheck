@@ -194,18 +194,27 @@ def run(root: Path) -> int:
 
 
 def base_of(root: Path) -> str:
-    """The merge base of ``HEAD`` with the main branch, else ``HEAD~1``."""
-    branch = (
-        f"origin/{engine.MAIN_BRANCH}" if engine.MAIN_BRANCH else "origin/HEAD"
+    """The merge base of ``HEAD`` with the main branch, else ``HEAD~1``.
+
+    The main branch is ``origin/MAIN_BRANCH``, else ``origin/HEAD``, which
+    many clones lack, else ``origin/main``.
+    """
+    branches = (
+        [f"origin/{engine.MAIN_BRANCH}"]
+        if engine.MAIN_BRANCH
+        else ["origin/HEAD", "origin/main"]
     )
-    found = subprocess.run(
-        ["git", "merge-base", "HEAD", branch],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return found.stdout.strip() if found.returncode == 0 else "HEAD~1"
+    for branch in branches:
+        found = subprocess.run(
+            ["git", "merge-base", "HEAD", branch],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if found.returncode == 0:
+            return found.stdout.strip()
+    return "HEAD~1"
 
 
 def check() -> int:

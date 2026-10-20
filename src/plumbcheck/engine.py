@@ -769,7 +769,10 @@ def authored(root: Path, changed: Iterable[str]) -> set[str]:
 def rule_line(g: Guideline, root: Path) -> str:
     """A guideline's index line: id, rule, enforcement and its leaf."""
     source, entry = resolved(g)
-    text = g.text or (entry.text if entry else g.key)
+    # A cache-only guide's rule text stays out of the (public) output; its
+    # leaf, on this machine, holds it.
+    public = source is not None and source.store == "commit"
+    text = g.text or (entry.text if entry and public else g.key)
     leaf = (
         location(root, source, entry.path, here=True)
         if source and entry
