@@ -261,6 +261,11 @@ def parser() -> argparse.ArgumentParser:
     showing.add_argument(
         "--html", type=Path, help="write the browsable map here"
     )
+    showing.add_argument(
+        "--coverage",
+        action="store_true",
+        help="rules with a checker vs. prose, per guide and section",
+    )
     indexing = commands.add_parser(
         "index", help="generate the guides' trees from their pinned sources"
     )
@@ -286,6 +291,9 @@ def _types(root: Path) -> int:
 
 
 def _show(root: Path, options: argparse.Namespace) -> int:
+    if options.coverage:
+        print(engine.coverage(), end="")
+        return 0
     if options.html is None:
         return show(root, options.files)
     page = engine.graph_page(engine.graph(), root.name)

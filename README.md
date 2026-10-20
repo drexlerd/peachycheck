@@ -8,9 +8,10 @@ each repository uses the same rules, checkers and tool configurations.
 
 - `standards/`: the instance. `general/` applies to every file; each folder of
   `languages/` (C++, Jinja, Python, reStructuredText, TypeScript, Verdog) holds its
-  `language.toml`, `guidelines.toml` (one table per guideline, with good and
-  bad examples) and `tools.toml` (its checkers). `metrics.toml` declares the
-  code metrics, `literature.bib` what guidelines and metrics cite.
+  `language.toml`, `overlay.toml` (the only hand-written guideline file, see
+  [Overlay](#overlay)) and `tools.toml` (its checkers). `metrics.toml`
+  declares the code metrics, `literature.bib` what guidelines and metrics
+  cite.
 - `standards/sources.toml`: the guides the guidelines derive from, each with
   its upstream, pin, sha256, license, attribution, store and parser.
   `verdog-standards index` turns each pinned copy into a tree that mirrors the
@@ -77,6 +78,7 @@ verdog-standards check-branch   # new findings since the merge base
 verdog-standards show FILE...   # the guidelines that apply to files
 verdog-standards show --html map.html   # the browsable map of the standards
 verdog-standards index          # generate the guides' trees from their copies
+verdog-standards show --coverage   # rules with a checker vs. prose, and gaps
 ```
 
 ## Develop
@@ -122,6 +124,39 @@ sections without gaps but the manifest's `gaps`, every page of the style
 guide's contents, all four Diátaxis kinds. `verdog-standards check` fails when
 a committed tree differs from what `index` generates, and when a cache-only
 guide is committed.
+
+## Overlay
+
+A language's `overlay.toml` holds what the guides cannot say, keyed by index
+id:
+
+```toml
+["cpp-core-guidelines/R.20"]
+checked_by = ["clang-tidy:cppcoreguidelines-owning-memory"]
+bad = "examples/ownership_bad.cpp"   # the checker must flag it (check --tests)
+priority = 1                          # listed in the prompt, lowest first
+
+["house/independent-tests"]          # a house rule: no guide states it
+text = "Keep tests independent; give each a single observable behavior to check."
+advisory = true
+priority = 11
+```
+
+- `checked_by` maps a rule to `tool` or `tool:check`, a glob such as
+  `ruff-docstrings:D*`; one check may map to several rules. The C++ table maps
+  every `cppcoreguidelines-*` check of clang-tidy by hand to the rules its
+  documentation enforces.
+- `text` replaces the derived text where it is poor; a house rule needs one,
+  and its `see` may name the rule whose leaf explains it.
+- Every key other than `house/<id>` must be an id of the language's guides'
+  indexes, or `check` fails.
+
+The prompt shows per active guide the lines of its top `index.md` (with its
+license and attribution), and one line per guideline with a `priority` (its
+id, rule, enforcement and leaf); the agent opens the `index.md` below, down
+to a rule's leaf. Other repositories read the trees from
+their worktree's `.verdog-standards/references/<guide>/`, where
+`engine.copy_references` puts them.
 
 ## Licenses
 
