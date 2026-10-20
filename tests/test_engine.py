@@ -340,10 +340,6 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
     findings = {(f.rule, f.message) for f in standards.coherence(graph)}
     assert findings == {
         ("tools", "checker cpp/unused runs, but no guideline names it."),
-        (
-            "tools",
-            "checker python/ruff-format runs, but no guideline names it.",
-        ),
         ("guidelines", "language empty has no guidelines."),
     }
     page = standards.graph_page(graph, "target")
