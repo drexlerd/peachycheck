@@ -1,0 +1,23 @@
+[project]
+name = "verdog-standards"
+version = "0.1.0"
+description = "The coding and documentation standards of verdog-ai, and their checks"
+requires-python = ">=3.12"
+dependencies = ["radon>=6", "ruff>=0.15", "codespell>=2.3", "doc8>=1.1"]
+
+[project.scripts]
+verdog-standards = "verdog_standards.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "pyright>=1.1.400", "coverage>=7"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/verdog_standards"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"standards" = "verdog_standards/standards"
+"templates" = "verdog_standards/templates"
