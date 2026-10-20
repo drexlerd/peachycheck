@@ -20,7 +20,7 @@ on:
         default: main
     secrets:
       SUBMODULES_TOKEN:
-        description: Reads private submodules; pass it with `secrets: inherit`.
+        description: "Reads private submodules; pass it with `secrets: inherit`."
         required: false
 
 permissions:
