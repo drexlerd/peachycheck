@@ -85,7 +85,7 @@ verdog-standards show --coverage   # rules with a checker vs. prose, and gaps
 
 ```sh
 uv sync
-uv run verdog-standards check --tests   # lint the instance, test the examples
+uv run verdog-standards check   # lint the instance
 uv run pytest
 ```
 
@@ -133,7 +133,6 @@ id:
 ```toml
 ["cpp-core-guidelines/R.20"]
 checked_by = ["clang-tidy:cppcoreguidelines-owning-memory"]
-bad = "examples/ownership_bad.cpp"   # the checker must flag it (check --tests)
 priority = 1                          # listed in the prompt, lowest first
 
 ["house/independent-tests"]          # a house rule: no guide states it

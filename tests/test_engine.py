@@ -252,7 +252,7 @@ def test_lint_names_every_format_error_with_file_and_line(
         '["house/no-text"]\nadvisory = "yes"\n\n'
         '["house/odd-kind"]\ntext = "T"\nkind = "prose"\n\n'
         '["house/refs"]\ntext = "T"\ncite = "no-such-key"\n'
-        'checked_by = ["nosuch:X1"]\ngood = "examples/missing.x"\n\n'
+        'checked_by = ["nosuch:X1"]\ndetails = "missing.md"\n\n'
         '["google-python/3.16"]\n\n'
         '["nowhere"]\ntext = "T"\n',
         '[runner]\nrole = "fixer"\n\n[empty]\nrole = "checker"\n',
@@ -273,7 +273,7 @@ def test_lint_names_every_format_error_with_file_and_line(
         (f"{overlay}:15", "bad/refs: 'nosuch' is not a checker of bad."),
         (
             f"{overlay}:15",
-            "bad/refs: good file examples/missing.x does not exist.",
+            "bad/refs: details file missing.md does not exist.",
         ),
         (f"{overlay}:21", "'google-python' is no guide of bad."),
         (f"{overlay}:23", "bad/nowhere: the key must be house/<id>"),
@@ -357,13 +357,13 @@ def test_changed_files_may_keep_but_not_add_legacy_violations(
     assert len(standards.changed_errors(root, base)) == 2
 
 
-def test_example_files_of_the_instance_are_not_style_checked(
+def test_the_pinned_guides_of_the_instance_are_not_style_checked(
     tmp_path: Path,
 ) -> None:
-    """Examples violate their guideline on purpose; checks skip them."""
+    """Guides keep their authors' style; checks skip them."""
     root, base = _repository(tmp_path, {"legacy.py": CLEAN})
     _write(
-        root / "standards" / "languages" / "python" / "examples" / "x_bad.py",
+        root / "standards" / "languages" / "python" / "references" / "x.py",
         VIOLATION,
     )
     assert standards.changed_errors(root, base) == []
@@ -536,25 +536,67 @@ def test_a_missing_tool_fails_instead_of_passing(
     ]
 
 
-def test_example_tests_confirm_the_tool_flags_the_bad_example(
+def test_a_deleted_file_needs_no_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cpp = _instance(monkeypatch, tmp_path) / "languages" / "cpp"
-    _clang_tidy(tmp_path, monkeypatch)
-    _write(cpp / "build" / "compile_commands.json", "[]")
-    _write(cpp / "examples" / "good.cpp", "int f();\n")
-    _write(cpp / "examples" / "bad.cpp", "int* g = new int;\n")
-    (cpp / "overlay.toml").write_text(
-        '["house/owning"]\ntext = "No owning new."\nchecked_by = ["clang-tidy"]\n'
-        'good = "examples/good.cpp"\nbad = "examples/bad.cpp"\n\n'
-        '["house/inverted"]\ntext = "Wrong way round."\n'
-        'checked_by = ["clang-tidy"]\n'
-        'good = "examples/bad.cpp"\nbad = "examples/good.cpp"\n'
+    root, base = _repository(tmp_path, {"a.cpp": "int f();\n"})
+    (root / "a.cpp").unlink()
+    monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
+    assert standards.style_errors(root, base, ["a.cpp"]) == []
+
+
+# Reversed, so this file itself leaks nothing.
+_LEAK = "vA0jG5sF1dH6cN4bY7rX2wP9mLk3Tv8qZ"[::-1]
+# A violation per checker, inline; its finding must map to a guideline.
+FIRES = [
+    ("general", "gitleaks", "a.txt", f'api_key = "{_LEAK}"\n'),
+    ("cpp", "clang-tidy", "a.cpp", "struct N {};\nN* make() { return new N; }\n"),
+    ("rst", "vale", "a.rst", "The change is measured by the gate.\n"),
+    ("rst", "codespell", "a.rst", "The gate measures teh change.\n"),
+    ("rst", "doc8", "a.rst", "The gate measures the change.   \n"),
+    ("typescript", "eslint", "a.ts", "var count = 1;\nexport const same = count == 1;\n"),
+    ("typescript", "tsc", "a.ts", "export function area(w, h) {\n  return w * h;\n}\n"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("language", "tool", "name", "text"), FIRES)
+def test_each_checker_flags_a_violation_its_guidelines_map(
+    tmp_path: Path, language: str, tool: str, name: str, text: str
+) -> None:
+    """The real tool runs, its check pattern parses, a guideline maps it.
+
+    A missing tool skips, unless ``REQUIRE_CHECKERS`` is set (the instance
+    job of CI installs them all).
+    """
+    loaded = standards.load()[language]
+    (check,) = [c for c in loaded.checkers() if c.tool == tool]
+    _write(tmp_path / name, text)
+    _write(
+        tmp_path / "build" / "compile_commands.json",
+        json.dumps(
+            [
+                {
+                    "directory": str(tmp_path),
+                    "file": str(tmp_path / name),
+                    "command": f"c++ -std=c++20 -c {tmp_path / name}",
+                }
+            ]
+        ),
     )
-    assert standards.example_tests({"cpp": standards.load()["cpp"]}) == [
-        "cpp/inverted: clang-tidy does not flag examples/good.cpp.",
-        "cpp/inverted: clang-tidy flags examples/bad.cpp.",
-    ]
+    try:
+        found = standards.findings(
+            check, loaded.title, tmp_path, [name], tmp_path
+        )
+    except standards.ToolMissingError:
+        if os.environ.get("REQUIRE_CHECKERS"):
+            raise
+        pytest.skip(f"{tool} is not installed")
+    assert any(
+        standards.matches(entry, tool, v.check)
+        for v in found
+        for g in loaded.guidelines
+        for entry in g.checked_by
+    ), found
 
 
 def test_the_graph_mirrors_the_files_and_reports_coherence(
@@ -636,8 +678,6 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
         "advisory",
         "link",
         "cite",
-        "good",
-        "bad",
         "details",
         "checked_by",
         "path",
@@ -667,7 +707,7 @@ def test_the_page_opens_on_the_guidelines_table_with_tabs_and_legend() -> None:
     assert data["prompts"] == prompts
     headers = re.findall(
         r'<th scope="col">([^<]+)<', page.split('id="guidelines"')[1]
-    )[:8]
+    )[:7]
     assert headers == [
         "Guideline",
         "Language",
@@ -675,7 +715,6 @@ def test_the_page_opens_on_the_guidelines_table_with_tabs_and_legend() -> None:
         "Advisory",
         "Checked by",
         "Sources",
-        "Examples",
         "Defined at",
     ]
     assert 'id="legend"' in page and "How to read this map" in page

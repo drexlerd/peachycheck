@@ -184,8 +184,8 @@ def base_of(root: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else "HEAD~1"
 
 
-def check(with_tests: bool) -> int:
-    """Lint the instance, its metrics and, with ``with_tests``, its examples."""
+def check() -> int:
+    """Lint the instance and its metrics."""
     standards = engine.load()
     for finding in engine.coherence(engine.graph()):
         print(f"warning ({finding.rule}): {finding.message}")
@@ -193,8 +193,6 @@ def check(with_tests: bool) -> int:
     errors += engine.source_errors()
     for extra in engine.CHECKS:
         errors += extra()
-    if with_tests:
-        errors += engine.example_tests(standards)
     print("\n".join(errors) or f"{len(standards)} standards, no problems.")
     return 1 if errors else 0
 
@@ -244,12 +242,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="verdog-standards")
     result.add_argument("--root", type=Path, default=Path.cwd())
     commands = result.add_subparsers(dest="command", required=True)
-    checking = commands.add_parser(
-        "check", help="lint the standards themselves"
-    )
-    checking.add_argument(
-        "--tests", action="store_true", help="run example tests"
-    )
+    commands.add_parser("check", help="lint the standards themselves")
     branch = commands.add_parser(
         "check-branch", help="no new findings since a base"
     )
@@ -307,7 +300,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     options = parser().parse_args(arguments)
     root: Path = options.root.resolve()
     commands: dict[str, Callable[[], int]] = {
-        "check": lambda: check(options.tests),
+        "check": check,
         "check-branch": lambda: check_branch(
             root, options.base or base_of(root)
         ),
