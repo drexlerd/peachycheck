@@ -11,6 +11,12 @@ each repository uses the same rules, checkers and tool configurations.
   `language.toml`, `guidelines.toml` (one table per guideline, with good and
   bad examples) and `tools.toml` (its checkers). `metrics.toml` declares the
   code metrics, `literature.bib` what guidelines and metrics cite.
+- `standards/sources.toml`: the guides the guidelines derive from, each with
+  its upstream, pin, sha256, license, attribution, store and parser.
+  `verdog-standards index` turns each pinned copy into a tree that mirrors the
+  guide's nesting: an `index.md` per level with one line per child, one leaf
+  per rule with the rule's complete text, and `index.toml` for scripts (see
+  [Guides](#guides)).
 - `templates/<type>/`: the project types. `type.toml` names the marker files
   that recognise a type and the commands its check runs; `files/` holds the
   root tool configurations (`ruff.toml`, `pyrightconfig.json`,
@@ -70,6 +76,7 @@ verdog-standards sync           # write the shared tool configurations
 verdog-standards check-branch   # new findings since the merge base
 verdog-standards show FILE...   # the guidelines that apply to files
 verdog-standards show --html map.html   # the browsable map of the standards
+verdog-standards index          # generate the guides' trees from their copies
 ```
 
 ## Develop
@@ -87,11 +94,45 @@ fixing its history first.
 auto-se uses the engine as a library and adds its own loop metrics, retriever
 and prompts through `engine.LAYERS`, `LOOPS`, `CATEGORIES` and `CHECKS`.
 
+## Guides
+
+Each guide of `standards/sources.toml` becomes a tree an agent reads top-down,
+opening only the branch it needs:
+
+```text
+standards/languages/python/references/google-python/
+  source/pyguide.md                    # the pinned copy, checked by sha256
+  index.md                             # one line per section
+  index.toml                           # the same tree, machine-readable
+  LICENSE  ATTRIBUTION.md
+  3-python-style-rules/
+    index.md                           # one line per rule of section 3
+    3.8-comments-and-docstrings.md     # a leaf: the rule's complete text
+~/.cache/verdog-standards/cpp-core-guidelines/<pin>/   # store = "cache"
+  index.md  R/index.md  R/smart/index.md  R/smart/R.20.md  ...
+```
+
+A leaf is a rule: an anchored rule heading of the C++ Core Guidelines
+(`R.20: ...`), a numbered section of a Google guide, a page of the Google
+developer documentation style guide, one of Diátaxis's four kinds. Headings
+below a rule (Reason, Example, Enforcement; Pros, Cons, Decision) stay in its
+leaf. Each parser checks the tree against its source and the generator fails
+when a rule is missing: the rules a Core Guidelines section lists, numbered
+sections without gaps but the manifest's `gaps`, every page of the style
+guide's contents, all four Diátaxis kinds. `verdog-standards check` fails when
+a committed tree differs from what `index` generates, and when a cache-only
+guide is committed.
+
 ## Licenses
 
-`standards/` quotes or pins third-party guides; see
-`standards/languages/*/references/SOURCES.md`. The Google style guides are
-CC BY 3.0 and Diátaxis CC BY-SA 4.0, both committed with attribution. The C++
-Core Guidelines are not committed: `references/downloads.toml` pins them by
-commit and sha256, and the engine fetches them into
-`~/.cache/verdog-standards/` when a check needs them.
+`standards/` quotes or pins third-party guides; `standards/sources.toml`
+names each with its license and attribution, and every tree carries `LICENSE`
+and `ATTRIBUTION.md`. The Google Python and TypeScript style guides are CC BY
+3.0, the Google developer documentation style guide CC BY 4.0 (a snapshot of
+its pages' articles, since it has no source repository) and Diátaxis CC BY-SA
+4.0, so its tree is CC BY-SA 4.0 too; all are committed with attribution. The
+C++ Core Guidelines allow copies for personal or internal business use only:
+they are pinned by commit and sha256 and fetched, and their tree generated,
+into `~/.cache/verdog-standards/` only, never into this public repository.
+Vale's `Google` style in `standards/languages/rst/vale/` comes from
+[errata-ai/Google](https://github.com/errata-ai/Google) (MIT).

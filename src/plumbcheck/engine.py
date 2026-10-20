@@ -35,6 +35,8 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
+from verdog_standards import sources
+
 
 def _data(name: str) -> Path:
     """A data folder: packaged next to this module, or at the repo's root."""
@@ -60,6 +62,7 @@ CACHE: Final = Path("~/.cache/verdog-standards")
 LANGUAGES: Final = "languages"
 GENERAL: Final = "general"
 LITERATURE: Final = "literature.bib"
+MANIFEST_NAME: Final = sources.MANIFEST
 MAIN_BRANCH: str = ""  # empty: the remote's default branch (origin/HEAD)
 GUIDELINE_ID: Final = re.compile(r"[a-z][a-z0-9-]*")
 KINDS: Final = ("coding", "documentation")
@@ -657,6 +660,77 @@ def copy_references(root: Path) -> None:
                 )
                 if found is not None and not found.is_relative_to(source):
                     shutil.copy2(found, target / found.name)
+
+
+def guides() -> dict[str, sources.Source]:
+    """The guides of ``sources.toml``, by id."""
+    return sources.manifest(STANDARDS)
+
+
+def generate(source: sources.Source) -> list[sources.Rule]:
+    """Write ``source``'s tree from its pinned copy; return its index."""
+    folder = sources.tree_folder(source, STANDARDS, CACHE)
+    copy = sources.fetch(source, folder)
+    files, rules = sources.render(source, copy, {})
+    sources.write(folder, files)
+    return rules
+
+
+def tree(source: sources.Source) -> Path:
+    """The folder of ``source``'s tree; a cached one is generated on first use."""
+    folder = sources.tree_folder(source, STANDARDS, CACHE)
+    if not (folder / sources.INDEX_TOML).is_file():
+        generate(source)
+    return folder
+
+
+def source_errors() -> list[str]:
+    """Guides whose copy, completeness or committed tree is wrong.
+
+    A committed tree must equal what ``verdog-standards index`` generates; a
+    cached guide must never be committed.
+    """
+    errors: list[str] = []
+    for source in guides().values():
+        errors += _tree_errors(source)
+    return errors + committed_cache_errors()
+
+
+def _tree_errors(source: sources.Source) -> list[str]:
+    folder = sources.tree_folder(source, STANDARDS, CACHE)
+    try:
+        files, _ = sources.render(source, sources.fetch(source, folder), {})
+    except (OSError, ValueError) as error:
+        return [f"{MANIFEST_NAME}: {error}."]
+    if source.store == "cache":
+        sources.write(folder, files)
+        return []
+    found = sources.stale(folder, files)
+    return (
+        [
+            f"{source.id}: {len(found)} generated files differ from the "
+            f"source, such as {found[0]}; run `verdog-standards index`."
+        ]
+        if found
+        else []
+    )
+
+
+def committed_cache_errors() -> list[str]:
+    """Files of the repository that hold a cache-only guide or its tree."""
+    listed = subprocess.run(
+        ["git", "-C", str(STANDARDS.parent), "ls-files"],
+        capture_output=True,
+        text=True,
+    )
+    tracked = listed.stdout.splitlines() if listed.returncode == 0 else []
+    cached = [s for s in guides().values() if s.store == "cache"]
+    return [
+        f"{path}: {source.id} allows no public copy; never commit it."
+        for path in tracked
+        for source in cached
+        if source.id in Path(path).parts or Path(path).name in source.files
+    ]
 
 
 def _marked(standards: Standards, root: Path) -> list[str]:

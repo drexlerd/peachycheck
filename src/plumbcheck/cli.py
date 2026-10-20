@@ -20,7 +20,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from verdog_standards import engine
+from verdog_standards import engine, sources
 
 
 def project_types() -> dict[str, dict[str, Any]]:
@@ -190,12 +190,32 @@ def check(with_tests: bool) -> int:
     for finding in engine.coherence(engine.graph()):
         print(f"warning ({finding.rule}): {finding.message}")
     errors = engine.lint_all() + engine.metric_tool_errors()
+    errors += engine.source_errors()
     for extra in engine.CHECKS:
         errors += extra()
     if with_tests:
         errors += engine.example_tests(standards)
     print("\n".join(errors) or f"{len(standards)} standards, no problems.")
     return 1 if errors else 0
+
+
+def index(names: Sequence[str]) -> int:
+    """Generate the trees of the guides ``names``, or of every guide."""
+    known = engine.guides()
+    unknown = sorted(set(names) - set(known))
+    if unknown:
+        print(f"unknown guides: {', '.join(unknown)}")
+        return 1
+    for source in (known[n] for n in names or known):
+        rules = engine.generate(source)
+        leaves = [r for r in rules if r.leaf]
+        checked = sum(bool(r.checked_by) for r in leaves)
+        print(
+            f"{source.id}: {len(leaves)} rules ({checked} checked, "
+            f"{len(leaves) - checked} prose) in {len(rules) - len(leaves)} "
+            f"sections, depth {sources.depth(rules)}, store {source.store}"
+        )
+    return 0
 
 
 def check_branch(root: Path, base: str) -> int:
@@ -241,6 +261,10 @@ def parser() -> argparse.ArgumentParser:
     showing.add_argument(
         "--html", type=Path, help="write the browsable map here"
     )
+    indexing = commands.add_parser(
+        "index", help="generate the guides' trees from their pinned sources"
+    )
+    indexing.add_argument("guides", nargs="*", help="default: every guide")
     commands.add_parser("types", help="the repository's recognised types")
     syncing = commands.add_parser("sync", help="write the types' tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
@@ -279,6 +303,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "check-branch": lambda: check_branch(
             root, options.base or base_of(root)
         ),
+        "index": lambda: index(options.guides),
         "types": lambda: _types(root),
         "sync": lambda: _sync(root, options.check),
         "run": lambda: run(root),
