@@ -251,6 +251,7 @@ def test_the_instance_is_well_formed() -> None:
     assert sorted(standards.load()) == [
         "cpp",
         "general",
+        "jinja",
         "python",
         "rst",
         "typescript",
@@ -559,7 +560,7 @@ def test_check_and_show(
     root, _ = _repository(tmp_path, {"parser.hpp": "int f();\n"})
     monkeypatch.setattr(standards.shutil, "which", _installed)
     assert cli.main(["--root", str(root), "check"]) == 0
-    assert capsys.readouterr().out.endswith("6 standards, no problems.\n")
+    assert capsys.readouterr().out.endswith("7 standards, no problems.\n")
     assert cli.main(["--root", str(root), "show"]) == 0
     shown = capsys.readouterr().out
     assert (

@@ -7,7 +7,7 @@ each repository uses the same rules, checkers and tool configurations.
 ## What is here
 
 - `standards/`: the instance. `general/` applies to every file; each folder of
-  `languages/` (C++, Python, reStructuredText, TypeScript, Verdog) holds its
+  `languages/` (C++, Jinja, Python, reStructuredText, TypeScript, Verdog) holds its
   `language.toml`, `guidelines.toml` (one table per guideline, with good and
   bad examples) and `tools.toml` (its checkers). `metrics.toml` declares the
   code metrics, `literature.bib` what guidelines and metrics cite.
@@ -16,7 +16,9 @@ each repository uses the same rules, checkers and tool configurations.
   root tool configurations (`ruff.toml`, `pyrightconfig.json`,
   `eslint.config.mjs`, `.clang-tidy`) every repository
   of that type shares.
-- `src/verdog_standards/`: the engine and the CLI `verdog-standards`.
+- `src/verdog_standards/`: the engine and the CLI `verdog-standards`;
+  `checks/` holds the checkers the instance runs itself (Jinja block tags,
+  Jinja environments in Python).
 - `.github/workflows/check.yml`: the reusable workflow every repository calls.
 
 | type | markers | commands |

@@ -9,7 +9,12 @@ dependencies = ["radon>=6", "ruff>=0.15", "codespell>=2.3", "doc8>=1.1"]
 verdog-standards = "verdog_standards.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pyright>=1.1.400", "coverage>=7"]
+dev = [
+    "pytest>=8",
+    "pyright>=1.1.400",
+    "coverage>=7",
+    "jinja2>=3.1.6",
+]
 
 [build-system]
 requires = ["hatchling>=1.25"]
