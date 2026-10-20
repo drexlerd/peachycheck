@@ -1027,12 +1027,7 @@ def _shapes(tree: ast.Module) -> dict[str, str]:
 
     Reformatting or documenting a function does not change it.
     """
-    documented = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-    for node in ast.walk(tree):
-        if isinstance(node, documented) and ast.get_docstring(node) is not None:
-            node.body = node.body[1:]
-        if isinstance(node, ast.JoinedStr):
-            node.values = _merged(node.values)
+    _normalize(tree)
     functions = (ast.FunctionDef, ast.AsyncFunctionDef)
     found: dict[str, str] = {}
     for node in tree.body:
@@ -1044,6 +1039,16 @@ def _shapes(tree: ast.Module) -> dict[str, str]:
                     f
                 )
     return found
+
+
+def _normalize(tree: ast.Module) -> None:
+    """Drop docstrings and join split f-string text, in place."""
+    documented = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if isinstance(node, documented) and ast.get_docstring(node) is not None:
+            node.body = node.body[1:]
+        if isinstance(node, ast.JoinedStr):
+            node.values = _merged(node.values)
 
 
 def _merged(values: list[ast.expr]) -> list[ast.expr]:
