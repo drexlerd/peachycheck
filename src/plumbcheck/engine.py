@@ -16,6 +16,7 @@ Checks count findings per file and allow no regression: a new file must have
 none, and a changed file may not gain any compared with the base.
 """
 
+import ast
 import fnmatch
 import hashlib
 import json
@@ -26,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 import urllib.request
 from collections import Counter
@@ -1018,8 +1020,29 @@ def _functions(source: str) -> dict[str, tuple[int, str]]:
                 else b["name"]
             )
             text = "\n".join(lines[b["lineno"] - 1 : b["endline"]])
-            functions[name] = (int(b["complexity"]), text)
+            functions[name] = (int(b["complexity"]), _shape(text))
     return functions
+
+
+def _shape(text: str) -> str:
+    """A function's syntax without docstrings.
+
+    Reformatting or documenting a function does not change it.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(text))
+    except SyntaxError:
+        return text
+    documented = (
+        ast.Module,
+        ast.ClassDef,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, documented) and ast.get_docstring(node) is not None:
+            node.body = node.body[1:]
+    return ast.dump(tree)
 
 
 def complexity_errors(
