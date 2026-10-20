@@ -520,6 +520,60 @@ def test_a_finding_is_new_by_file_check_and_message_not_line(
     ]
 
 
+def test_a_finding_naming_its_checkout_matches_in_base_and_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The base runs in a temporary checkout; a message naming the absolute
+    # path of the file must not make the same finding new.
+    root, base = _repository(
+        tmp_path,
+        {"a.cpp": "int* g = new int;\n", "build/compile_commands.json": "[]"},
+    )
+    script = (
+        'for f in "$@"; do grep -n new "$f" | sed "s|^\\([0-9]*\\):.*|'
+        '$PWD/$f:\\1:1: warning: $PWD/$f owns [cppcoreguidelines-owning-memory]|"; done'
+    )
+    tool = _write(tmp_path / "bin" / "clang-tidy", f"#!/bin/sh\n{script}\n")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tool.parent}{os.pathsep}{os.environ['PATH']}")
+    (root / "a.cpp").write_text("int f();\nint* g = new int;\n")
+    assert standards.style_errors(root, base, ["a.cpp"]) == []
+    (root / "a.cpp").write_text("int* g = new int;\nint* h = new int;\n")
+    (error,) = standards.style_errors(root, base, ["a.cpp"])
+    assert "  a.cpp:2: warning: a.cpp owns [" in error
+
+
+def test_tsc_checks_the_project_with_the_branch_s_dependencies(
+    tmp_path: Path,
+) -> None:
+    # The base checkout has no node_modules of its own; it resolves the
+    # branch's, through the tsconfig, so an unchanged finding stays old.
+    root, base = _repository(
+        tmp_path,
+        {
+            ".gitignore": "node_modules/\n",
+            "tsconfig.json": json.dumps(
+                {"compilerOptions": {"jsx": "react-jsx"}, "include": ["src"]}
+            ),
+            "src/b.tsx": "export const b = 1;\n",
+            "src/a.tsx": (
+                'import { x } from "dep";\nimport { b } from "./b";\n'
+                "export const y: string = x + b;\n"
+            ),
+        },
+    )
+    _write(root / "node_modules/dep/package.json", '{"types": "index.d.ts"}')
+    _write(root / "node_modules/dep/index.d.ts", "export const x: number;\n")
+    (root / "src/a.tsx").write_text(
+        "// Changed.\n" + (root / "src/a.tsx").read_text()
+    )
+    if not shutil.which("npm") and not os.environ.get("REQUIRE_CHECKERS"):
+        pytest.skip("npm, which installs tsc, is not installed")
+    errors = standards.style_errors(root, base, ["src/a.tsx"])
+    assert [e for e in errors if "tsc" in e] == []
+    assert (root / "node_modules/dep/index.d.ts").is_file()
+
+
 def test_a_missing_tool_fails_instead_of_passing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
