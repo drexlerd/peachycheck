@@ -162,8 +162,8 @@ names each new finding with the guidelines its check maps to:
 ```text
 a.cpp gains clang-tidy findings (0 -> 1); fix each new one and follow the guideline it breaks:
   a.cpp:2: warning: returning a newly created resource ... [cppcoreguidelines-owning-memory]
-    - cpp-core-guidelines/R.20: R.20: (a rule title) [checked by clang-tidy cppcoreguidelines-owning-memory] → .../R/smart/R.20.md
-    - cpp-core-guidelines/I.11: I.11: (a rule title) [checked by clang-tidy cppcoreguidelines-owning-memory] → .../I/I.11.md
+    - cpp-core-guidelines/R.20: R.20: <the rule's title> [checked by clang-tidy cppcoreguidelines-owning-memory] → .../R/smart/R.20.md
+    - cpp-core-guidelines/I.11: I.11: <the rule's title> [checked by clang-tidy cppcoreguidelines-owning-memory] → .../I/I.11.md
 ```
 
 Each checker's `check` pattern in `tools.toml` finds a finding's check id. A
