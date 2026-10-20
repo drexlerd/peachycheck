@@ -699,8 +699,10 @@ def test_no_new_or_changed_function_above_the_complexity_limit(
     root, base = _repository(tmp_path, {"old.py": COMPLEX})
     (root / "old.py").write_text(COMPLEX + "\n\nVALUE = 1\n")
     assert standards.complexity_errors(root, base, ["old.py"]) == []
-    # Reformatting a function does not change it.
-    (root / "old.py").write_text(COMPLEX.replace("return 1\n", "return (1)\n"))
+    # Reformatting or documenting a function does not change it.
+    reformatted = COMPLEX.replace("return 1\n", "return (1)\n")
+    documented = reformatted.replace(":\n", ':\n    """Branch."""\n', 1)
+    (root / "old.py").write_text(documented)
     assert standards.complexity_errors(root, base, ["old.py"]) == []
     (root / "old.py").write_text(COMPLEX.replace("return -1", "return -2"))
     (root / "new.py").write_text(COMPLEX)

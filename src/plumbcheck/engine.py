@@ -1025,11 +1025,24 @@ def _functions(source: str) -> dict[str, tuple[int, str]]:
 
 
 def _shape(text: str) -> str:
-    """The syntax of a function's source, so reformatting is no change."""
+    """A function's syntax without docstrings.
+
+    Reformatting or documenting a function does not change it.
+    """
     try:
-        return ast.dump(ast.parse(textwrap.dedent(text)))
+        tree = ast.parse(textwrap.dedent(text))
     except SyntaxError:
         return text
+    documented = (
+        ast.Module,
+        ast.ClassDef,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, documented) and ast.get_docstring(node) is not None:
+            node.body = node.body[1:]
+    return ast.dump(tree)
 
 
 def complexity_errors(
