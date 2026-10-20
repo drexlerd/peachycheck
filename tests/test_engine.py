@@ -747,7 +747,7 @@ def test_types_are_recognised_and_their_configs_synced(tmp_path: Path) -> None:
     # A Verdog project generates its pyproject.toml: no plain package.
     (tmp_path / "project.json").write_text("{}")
     (tmp_path / "CMakeLists.txt").write_text("")
-    assert cli.types_of(tmp_path) == ["cpp", "verdog-project"]
+    assert cli.types_of(tmp_path) == ["verdog-project", "cpp"]
 
 
 def test_a_pinned_guide_is_fetched_once_and_verified(
@@ -787,3 +787,65 @@ def test_a_pinned_guide_is_fetched_once_and_verified(
     (instance / "languages/cpp/references/downloads.toml").write_text(pinned)
     with pytest.raises(ValueError, match="sha256"):
         standards.guide(cpp, file)
+
+
+def _ran(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[int, list[str]]:
+    """``run`` in ``root`` with every command recorded instead of run."""
+    lines: list[str] = []
+
+    def record(line: str, **_: object) -> subprocess.CompletedProcess[str]:
+        lines.append(line)
+        return subprocess.CompletedProcess(line, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", record)
+    return cli.run(root), lines
+
+
+def test_cpp_runs_after_the_python_types_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Native dependencies from wheels exist before CMake configures."""
+    for name in ("CMakeLists.txt", "pyproject.toml", "uv.lock"):
+        _write(tmp_path / name, "")
+    assert cli.types_of(tmp_path) == ["python-package", "cpp"]
+    code, lines = _ran(tmp_path, monkeypatch)
+    assert code == 0
+    assert lines[0].startswith("uv sync")
+    assert lines[-3:] == cli.project_types()["cpp"]["commands"]
+
+
+def test_a_standards_preset_replaces_the_plain_cmake_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The presets run instead; the build must still land in build/standards."""
+    _write(tmp_path / "CMakeLists.txt", "")
+    presets = {
+        kind: [{"name": "standards"}]
+        for kind in ("configurePresets", "buildPresets", "testPresets")
+    }
+    _write(tmp_path / "CMakePresets.json", json.dumps(presets))
+    code, lines = _ran(tmp_path, monkeypatch)
+    assert lines == list(cli.project_types()["cpp"]["presets"].values())
+    assert code == 1  # no build/standards/compile_commands.json
+    _write(tmp_path / "build/standards/compile_commands.json", "[]")
+    assert _ran(tmp_path, monkeypatch)[0] == 0
+
+
+def test_siblings_are_the_uv_path_sources_next_to_the_repository(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Sources of the root and of workspace members count, others do not."""
+    root = tmp_path / "app"
+    _write(
+        root / "pyproject.toml",
+        '[tool.uv.workspace]\nmembers = ["packages/*"]\n'
+        "[tool.uv.sources]\n"
+        'lib = { workspace = true }\nruntime = { path = "../runtime" }\n'
+        'vendored = { path = "vendor/x" }\n',
+    )
+    _write(
+        root / "packages/lib/pyproject.toml",
+        '[tool.uv.sources]\ncli = { path = "../../../cli" }\n',
+    )
+    assert cli.main(["--root", str(root), "siblings"]) == 0
+    assert capsys.readouterr().out == "cli\nruntime\n"

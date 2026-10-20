@@ -10,13 +10,15 @@ does.
 
 import argparse
 import filecmp
+import graphlib
+import json
 import shutil
 import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from verdog_standards import engine
 
@@ -39,7 +41,80 @@ def types_of(root: Path) -> list[str]:
         if all((root / marker).exists() for marker in spec["markers"])
     ]
     replaced = {r for name in found for r in known[name].get("replaces", ())}
-    return [name for name in found if name not in replaced]
+    return _ordered(known, [name for name in found if name not in replaced])
+
+
+def _ordered(known: dict[str, dict[str, Any]], kept: list[str]) -> list[str]:
+    """``kept``, each type after the types of its ``after`` that it has."""
+    order = graphlib.TopologicalSorter(
+        {n: [a for a in known[n].get("after", ()) if a in kept] for n in kept}
+    )
+    return list(order.static_order())
+
+
+def _presets(root: Path) -> set[str]:
+    """The kinds of CMake presets named ``standards``, e.g. ``testPresets``."""
+    kinds: set[str] = set()
+    for name in ("CMakePresets.json", "CMakeUserPresets.json"):
+        if (root / name).is_file():
+            presets: dict[str, Any] = json.loads((root / name).read_text())
+            for kind, entries in presets.items():
+                if not isinstance(entries, list):
+                    continue  # ``version``, ``cmakeMinimumRequired``, ...
+                named = cast(list[dict[str, Any]], entries)
+                if any(e.get("name") == "standards" for e in named):
+                    kinds.add(kind)
+    return kinds
+
+
+def commands_of(root: Path, name: str) -> list[str]:
+    """The commands of type ``name`` in ``root``.
+
+    A ``standards`` preset of a kind in ``presets`` replaces the command at
+    that kind's position.
+    """
+    spec = project_types()[name]
+    commands = list(spec["commands"])
+    found = _presets(root)
+    for i, (kind, line) in enumerate(spec.get("presets", {}).items()):
+        if kind in found:
+            commands[i] = line
+    return commands
+
+
+def _uv(pyproject: Path) -> dict[str, Any]:
+    return tomllib.loads(pyproject.read_text()).get("tool", {}).get("uv", {})
+
+
+def siblings(root: Path) -> list[str]:
+    """The ``<name>`` of each uv path source ``../<name>`` of ``root``.
+
+    The sources of the root project and of its workspace members count.
+    """
+    if not (root / "pyproject.toml").is_file():
+        return []
+    members = (
+        _uv(root / "pyproject.toml").get("workspace", {}).get("members", [])
+    )
+    projects = [root, *(m for g in members for m in sorted(root.glob(g)))]
+    names: set[str] = set()
+    for project in projects:
+        if not (project / "pyproject.toml").is_file():
+            continue
+        sources = _uv(project / "pyproject.toml").get("sources", {}).values()
+        for source in sources:
+            # ponytail: a list of sources (per platform marker) is skipped
+            if isinstance(source, dict) and "path" in source:
+                path = cast(str, source["path"])
+                folder = (project / path).resolve()
+                if folder.parent == root.resolve().parent:
+                    names.add(folder.name)
+    return sorted(names)
+
+
+def _siblings(root: Path) -> int:
+    print("\n".join(siblings(root)))
+    return 0
 
 
 def _files(name: str) -> list[Path]:
@@ -75,13 +150,22 @@ def sync(root: Path, *, check: bool) -> list[str]:
 def run(root: Path) -> int:
     """Run every command of the types of ``root``; the first failure stops."""
     for name in types_of(root):
-        for line in project_types()[name]["commands"]:
+        for line in commands_of(root, name):
             print(f"::group::{name}: {line}", flush=True)
             code = subprocess.run(line, shell=True, cwd=root).returncode
             print("::endgroup::", flush=True)
             if code:
                 print(f"{name}: `{line}` failed ({code})")
                 return code
+    if (
+        "configurePresets" in _presets(root)
+        and not (root / "build/standards/compile_commands.json").is_file()
+    ):
+        print(
+            "the `standards` configure preset must set binaryDir "
+            "build/standards and CMAKE_EXPORT_COMPILE_COMMANDS=ON"
+        )
+        return 1
     return 0
 
 
@@ -161,6 +245,7 @@ def parser() -> argparse.ArgumentParser:
     syncing = commands.add_parser("sync", help="write the types' tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
     commands.add_parser("run", help="run the types' commands")
+    commands.add_parser("siblings", help="the sibling repositories uv needs")
     return result
 
 
@@ -197,6 +282,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "types": lambda: _types(root),
         "sync": lambda: _sync(root, options.check),
         "run": lambda: run(root),
+        "siblings": lambda: _siblings(root),
         "show": lambda: _show(root, options),
     }
     return commands[options.command]()

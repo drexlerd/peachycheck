@@ -26,7 +26,22 @@ each repository uses the same rules, checkers and tool configurations.
 | typescript | `package.json` | npm ci, `npm run check`, `npm test` |
 | cpp | `CMakeLists.txt` | cmake configure, build, ctest |
 
-A repository may have several types, such as C++ with Python bindings.
+A repository may have several types, such as C++ with Python bindings. Three
+rules let one check build them all:
+
+1. **Order.** A type runs after the types its `after` names: `cpp` runs after
+   `python-package` and `verdog-project`, whose `uv sync` installs native
+   dependencies from wheels.
+2. **Siblings.** Before the commands, the check clones each uv path source
+   `../<name>` for which `verdog-ai/<name>` exists next to the repository, on
+   the same-named branch if there is one (`verdog-standards siblings` lists
+   them). Private ones need `SUBMODULES_TOKEN`.
+3. **Presets.** A `standards` preset in `CMakePresets.json` or
+   `CMakeUserPresets.json` replaces the plain configure, build or test command
+   of its kind, for project-specific options. Its binary directory stays
+   `build/standards` with `CMAKE_EXPORT_COMPILE_COMMANDS=ON`, or `run` fails.
+
+The uv cache and ccache keep the second run fast.
 
 ## Use it in a repository
 
