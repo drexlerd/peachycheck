@@ -26,6 +26,7 @@ may not gain one the base lacks (same file, check and message).
 """
 
 import ast
+import contextlib
 import fnmatch
 import functools
 import hashlib
@@ -39,7 +40,7 @@ import sys
 import tempfile
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, cast
@@ -131,6 +132,10 @@ FINDING: Final = re.compile(
     re.M,
 )
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
+# Installed dependencies the checkers resolve imports from; the base checkout
+# links the branch's, so both resolve them alike.
+# ponytail: top-level only; add nested ones when a monorepo needs them.
+DEPENDENCIES: Final = ("node_modules",)
 GTS: Final = ("gts@5.3.1", "typescript@5.4.5")
 TOOLS: Final = CACHE / "gts"
 BUILD_DIRECTORIES: list[str] = ["build", "build/standards"]
@@ -988,11 +993,23 @@ def findings(
     for match in FINDING.finditer(result.stdout):
         relative = _relative(root, match["path"])
         if relative in wanted:
+            message = _portable(root, match["message"])
             found += [
-                Violation(relative, int(match["line"]), name, match["message"])
-                for name in _checks(check, match["message"])
+                Violation(relative, int(match["line"]), name, message)
+                for name in _checks(check, message)
             ]
     return found
+
+
+def _portable(root: Path, message: str) -> str:
+    """``message`` with paths into ``root`` relative to it.
+
+    The base is checked in a temporary checkout, so its findings match the
+    branch's only without the checkout's own path.
+    """
+    for prefix in {f"{root.resolve()}/", f"{root.absolute()}/"}:
+        message = message.replace(prefix, "")
+    return message
 
 
 def _relative(root: Path, path: str) -> str:
@@ -1077,6 +1094,15 @@ def check_errors(
     if not jobs:
         return []
     errors: list[str] = []
+    with _base_checkout(root, base) as before:
+        for activation, check, job_paths in jobs:
+            errors += _regressions(activation, check, root, before, job_paths)
+    return errors
+
+
+@contextlib.contextmanager
+def _base_checkout(root: Path, base: str) -> Generator[Path, None, None]:
+    """A temporary checkout of ``base`` with the branch's dependencies."""
     with tempfile.TemporaryDirectory() as checkout:
         subprocess.run(
             ["git", "worktree", "add", "-q", "--detach", checkout, base],
@@ -1084,18 +1110,21 @@ def check_errors(
             capture_output=True,
             check=True,
         )
+        links = [Path(checkout) / name for name in DEPENDENCIES]
         try:
-            for activation, check, job_paths in jobs:
-                errors += _regressions(
-                    activation, check, root, Path(checkout), job_paths
-                )
+            for link in links:
+                if (root / link.name).is_dir() and not link.exists():
+                    link.symlink_to((root / link.name).resolve())
+            yield Path(checkout)
         finally:
+            for link in links:
+                if link.is_symlink():
+                    link.unlink()  # so removing the checkout spares the target
             subprocess.run(
                 ["git", "worktree", "remove", "--force", checkout],
                 cwd=root,
                 capture_output=True,
             )
-    return errors
 
 
 def _regressions(
