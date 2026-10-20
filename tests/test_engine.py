@@ -68,6 +68,13 @@ def _instance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return instance
 
 
+def _title(rule: str) -> str:
+    """A cached rule's title: the Core Guidelines may not be quoted here."""
+    entry = standards.rule(rule)
+    assert entry is not None
+    return entry.title
+
+
 def _installed(tool: str) -> str:
     return f"/usr/bin/{tool}"
 
@@ -189,9 +196,9 @@ def test_every_loop_sees_general_then_its_languages_by_kind(
         "cpp/independent-tests",
     ]
     owner = design[1]["coding"][0]
-    assert owner["text"] == (
-        "R.20: (a rule title)"
-    )
+    # The rule's title as the cached index has it; never quoted here.
+    title = _title("cpp-core-guidelines/R.20")
+    assert owner["text"] == title and title.startswith("R.20: ")
     assert owner["enforcement"] == (
         "[checked by clang-tidy cppcoreguidelines-owning-memory]"
     )
@@ -467,7 +474,7 @@ def test_cpp_changes_follow_the_core_guidelines_through_clang_tidy(
         "    - cpp-core-guidelines/I.11",
     ]
     assert rules[0].endswith(
-        "R.20: (a rule title) "
+        f"{_title('cpp-core-guidelines/R.20')} "
         "[checked by clang-tidy cppcoreguidelines-owning-memory] → "
         f"{tree / 'R/smart/R.20.md'}"
     )
@@ -573,7 +580,7 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
     raii = graph.nodes["guideline:cpp-core-guidelines/R.1"]
     assert raii.parent == "language:cpp"
     # A cache-only guide's text never reaches the map; a committed one's does.
-    assert raii.data["text"] == "" and "Manage resources" not in (
+    assert raii.data["text"] == "" and _title(raii.data["key"]) not in (
         standards.graph_page(graph, "t")
     )
     assert raii.data["section"] == "" and raii.data["reference"] == (
@@ -729,7 +736,10 @@ def test_check_and_show(
     )
     shown = capsys.readouterr().out
     assert "cpp: parser.hpp ends with .hpp" in shown
-    assert "  cpp-core-guidelines/R.1: R.1: Manage resources" in shown
+    assert (
+        f"  cpp-core-guidelines/R.1: {_title('cpp-core-guidelines/R.1')}"
+        in (shown)
+    )
     page = tmp_path / "map.html"
     assert cli.main(["--root", str(root), "show", "--html", str(page)]) == 0
     assert page.read_text().startswith("<!doctype html>")

@@ -1,5 +1,6 @@
 """The guides' manifest, parsers, trees and their completeness."""
 
+import re
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -9,7 +10,7 @@ import pytest
 from verdog_standards import engine
 from verdog_standards import sources as s
 
-RULE_1 = """### <a name="rr-raii"></a>R.1: Manage resources automatically
+RULE_1 = """### <a name="rr-raii"></a>R.1: Hold resources in handles
 
 ##### Reason
 
@@ -32,14 +33,14 @@ Rules about resources.
 
 * Resource management rule summary:
 
-  * [R.1: Manage resources automatically](#rr-raii)
-  * [R.20: Use `unique_ptr` to represent ownership](#rr-owner)
+  * [R.1: Hold resources in handles](#rr-raii)
+  * [R.20: Give an owner its own type](#rr-owner)
 
 {RULE_1}
 
 ## <a name="ss-smart"></a>R.smart: Smart pointers
 
-### <a name="rr-owner"></a>R.20: Use `unique_ptr` to represent ownership
+### <a name="rr-owner"></a>R.20: Give an owner its own type
 
 ##### Reason
 
@@ -121,7 +122,7 @@ def test_a_core_guidelines_rule_keeps_its_complete_text_in_its_leaf(
         in files[s.INDEX]
     )
     section = files["R/index.md"]
-    assert "- R.1: Manage resources automatically [prose] → R/R.1.md" in section
+    assert "- R.1: Hold resources in handles [prose] → R/R.1.md" in section
     assert (
         "- R.smart: Smart pointers — 1 rule, 0 checked → R/smart/index.md"
         in section
@@ -232,13 +233,20 @@ def test_every_committed_tree_is_generated_and_no_cached_guide_is_committed() ->
         text=True,
         check=True,
     ).stdout.split()
-    titles = [r.title for r in rules if r.leaf and len(r.title) > 40][:50]
-    for path in tracked:
-        assert "cpp-core-guidelines" not in Path(path).parts
-        file = repository / path
-        if (
-            file.suffix in (".md", ".toml", ".py", ".html", ".j2", ".rst")
-            and file.is_file()
-        ):
-            text = file.read_text(errors="ignore")
-            assert not [t for t in titles if t in text], path
+    # A rule's title after its id, such as "Use `unique_ptr` ...", from R.20.
+    titles = {r.title.partition(": ")[2] for r in rules} - {""}
+    quoted = re.compile("|".join(re.escape(t) for t in titles if len(t) > 24))
+    found = {
+        path: hit[0]
+        for path in tracked
+        if "cpp-core-guidelines" in Path(path).parts
+        or (
+            (repository / path).is_file()
+            and (hit := quoted.search(_text(repository / path)))
+        )
+    }
+    assert found == {}
+
+
+def _text(path: Path) -> str:
+    return path.read_text(errors="ignore") if path.stat().st_size < 4e6 else ""
