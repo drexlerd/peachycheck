@@ -41,8 +41,11 @@ def types_of(root: Path) -> list[str]:
         if all((root / marker).exists() for marker in spec["markers"])
     ]
     replaced = {r for name in found for r in known[name].get("replaces", ())}
-    kept = [name for name in found if name not in replaced]
-    # A type runs after the types of its ``after`` that the repository has.
+    return _ordered(known, [name for name in found if name not in replaced])
+
+
+def _ordered(known: dict[str, dict[str, Any]], kept: list[str]) -> list[str]:
+    """``kept``, each type after the types of its ``after`` that it has."""
     order = graphlib.TopologicalSorter(
         {n: [a for a in known[n].get("after", ()) if a in kept] for n in kept}
     )
