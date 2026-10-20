@@ -317,11 +317,22 @@ def test_new_python_files_must_follow_the_google_style(tmp_path: Path) -> None:
     (root / "clean.py").write_text(CLEAN)
     assert standards.changed_errors(root, base) == []
     (root / "new.py").write_text(CLEAN + VIOLATION)
+    rules = standards.STANDARDS / "languages/python/references/google-python"
+    style = rules / "3-python-style-rules"
     assert standards.changed_errors(root, base) == [
-        "new.py gains ruff findings (0 -> 1); follow the Python guidelines it "
-        "checks: google-python/3.16, python/bug-patterns.",
-        "new.py gains ruff-docstrings findings (0 -> 1); follow the Python "
-        "guidelines it checks: google-python/3.8.",
+        "new.py gains ruff findings (0 -> 1); fix each new one and follow the "
+        "guideline it breaks:\n"
+        "  new.py:17: N802 Function name `mixedCase` should be lowercase\n"
+        "    - google-python/3.16: Name modules, functions and variables in "
+        "`snake_case` and classes in `CapWords`. [checked by ruff N*] → "
+        f"{style / '3.16-naming.md'}",
+        "new.py gains ruff-docstrings findings (0 -> 1); fix each new one and "
+        "follow the guideline it breaks:\n"
+        "  new.py:17: D103 Missing docstring in public function\n"
+        "    - google-python/3.8: 3.8 Comments and Docstrings: Be sure to use "
+        "the right style for module, function, method docstrings and inline "
+        "comments. [checked by ruff-docstrings D*] → "
+        f"{style / '3.8-comments-and-docstrings.md'}",
     ]
 
 
@@ -372,41 +383,58 @@ def test_typescript_follows_the_same_rule(
     (root / "old.ts").write_text("let a = 1;\nvar b = 2;\n")
     (root / "new.ts").write_text("var c = 3;\n")
 
-    def count(
+    def findings(
         check: standards.Check,
         title: str,
         directory: Path,
         paths: Sequence[str],
         build: Path,
-    ) -> Counter[str]:
+    ) -> list[standards.Violation]:
         if check.tool != "eslint":
-            return Counter()
-        return Counter(
-            {
-                f: (directory / f).read_text().count("var ")
-                for f in paths
-                if (directory / f).is_file()
-            }
-        )
+            return []
+        message = "Unexpected var, use let or const instead. [Error/no-var]"
+        return [
+            standards.Violation(f, i, "no-var", message)
+            for f in paths
+            if (directory / f).is_file()
+            for i, line in enumerate(
+                (directory / f).read_text().splitlines(), 1
+            )
+            if line.startswith("var ")
+        ]
 
-    monkeypatch.setattr(standards, "count", count)
-    assert standards.style_errors(root, base, ["old.ts", "new.ts"]) == [
-        "new.ts gains eslint findings (0 -> 1); follow the TypeScript "
-        "guidelines it checks: typescript/gts-style, "
-        "google-typescript/local-variable-declarations, "
-        "google-typescript/control-structures.",
-        "old.ts gains eslint findings (0 -> 1); follow the TypeScript "
-        "guidelines it checks: typescript/gts-style, "
-        "google-typescript/local-variable-declarations, "
-        "google-typescript/control-structures.",
+    monkeypatch.setattr(standards, "findings", findings)
+    errors = standards.style_errors(root, base, ["old.ts", "new.ts"])
+    assert [e.splitlines()[:2] for e in errors] == [
+        [
+            "new.ts gains eslint findings (0 -> 1); fix each new one and "
+            "follow the guideline it breaks:",
+            "  new.ts:1: Unexpected var, use let or const instead. "
+            "[Error/no-var]",
+        ],
+        [
+            "old.ts gains eslint findings (0 -> 1); fix each new one and "
+            "follow the guideline it breaks:",
+            "  old.ts:2: Unexpected var, use let or const instead. "
+            "[Error/no-var]",
+        ],
+    ]
+    # One check maps to every guideline that names it.
+    assert [line.split(":")[0] for line in errors[0].splitlines()[2:]] == [
+        "    - typescript/gts-style",
+        "    - google-typescript/local-variable-declarations",
     ]
 
 
-def _clang_tidy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _clang_tidy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    check: str = "cppcoreguidelines-owning-memory",
+) -> None:
     script = (
         'for f in "$@"; do case "$f" in *.cpp) '
         'grep -n "new" "$f" | sed "s|^\\([0-9]*\\):.*|'
-        "$f:\\1:1: warning: owning [cppcoreguidelines-owning-memory]"
+        f"$f:\\1:1: warning: owning [{check}]"
         '\\n$f:\\1:1: note: here|";; esac; done'
     )
     tool = _write(tmp_path / "bin" / "clang-tidy", f"#!/bin/sh\n{script}\n")
@@ -424,10 +452,65 @@ def test_cpp_changes_follow_the_core_guidelines_through_clang_tidy(
     (root / "a.cpp").write_text("int f();\nint* g = new int;\n")
     _clang_tidy(tmp_path, monkeypatch)
     (error,) = standards.style_errors(root, base, ["a.cpp"])
-    assert error.startswith(
-        "a.cpp gains clang-tidy findings (0 -> 1); follow the C++ guidelines "
-        "it checks: cpp-core-guidelines/R.20, cpp-core-guidelines/R.10, "
+    tree = standards.tree(standards.guides()["cpp-core-guidelines"])
+    head, finding, *rules = error.splitlines()
+    assert head == (
+        "a.cpp gains clang-tidy findings (0 -> 1); fix each new one and "
+        "follow the guideline it breaks:"
     )
+    assert finding == (
+        "  a.cpp:2: warning: owning [cppcoreguidelines-owning-memory]"
+    )
+    # owning-memory maps to I.11 and R.20, each with its text and leaf.
+    assert [r.split(":")[0] for r in rules] == [
+        "    - cpp-core-guidelines/R.20",
+        "    - cpp-core-guidelines/I.11",
+    ]
+    assert rules[0].endswith(
+        "R.20: (a rule title) "
+        "[checked by clang-tidy cppcoreguidelines-owning-memory] → "
+        f"{tree / 'R/smart/R.20.md'}"
+    )
+    # In a worktree with the copied trees, the leaf is the copy's.
+    standards.copy_references(root)
+    (error,) = standards.style_errors(root, base, ["a.cpp"])
+    assert error.splitlines()[2].endswith(
+        f"→ {standards.WORKTREE_REFERENCES}/cpp-core-guidelines/R/smart/R.20.md"
+    )
+
+
+def test_an_unmapped_check_names_the_tool_s_documentation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repository(
+        tmp_path, {"a.cpp": "int f();\n", "build/compile_commands.json": "[]"}
+    )
+    (root / "a.cpp").write_text("int f();\nint* g = new int;\n")
+    _clang_tidy(tmp_path, monkeypatch, "misc-no-such-check")
+    (error,) = standards.style_errors(root, base, ["a.cpp"])
+    assert error.splitlines()[2] == (
+        "    - no guideline maps clang-tidy misc-no-such-check; see "
+        "https://clang.llvm.org/extra/clang-tidy/"
+    )
+
+
+def test_a_finding_is_new_by_file_check_and_message_not_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base = _repository(
+        tmp_path,
+        {"a.cpp": "int* g = new int;\n", "build/compile_commands.json": "[]"},
+    )
+    _clang_tidy(tmp_path, monkeypatch)
+    (root / "a.cpp").write_text("int f();\n\nint* g = new int;\n")
+    assert standards.style_errors(root, base, ["a.cpp"]) == []
+    (root / "a.cpp").write_text("int* g = new int;\nint* h = new int;\n")
+    (error,) = standards.style_errors(root, base, ["a.cpp"])
+    assert error.splitlines()[:2] == [
+        "a.cpp gains clang-tidy findings (1 -> 2); fix each new one and "
+        "follow the guideline it breaks:",
+        "  a.cpp:2: warning: owning [cppcoreguidelines-owning-memory]",
+    ]
 
 
 def test_a_missing_tool_fails_instead_of_passing(
