@@ -16,6 +16,7 @@ Checks count findings per file and allow no regression: a new file must have
 none, and a changed file may not gain any compared with the base.
 """
 
+import ast
 import fnmatch
 import hashlib
 import json
@@ -26,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 import urllib.request
 from collections import Counter
@@ -1018,8 +1020,16 @@ def _functions(source: str) -> dict[str, tuple[int, str]]:
                 else b["name"]
             )
             text = "\n".join(lines[b["lineno"] - 1 : b["endline"]])
-            functions[name] = (int(b["complexity"]), text)
+            functions[name] = (int(b["complexity"]), _shape(text))
     return functions
+
+
+def _shape(text: str) -> str:
+    """The syntax of a function's source, so reformatting is no change."""
+    try:
+        return ast.dump(ast.parse(textwrap.dedent(text)))
+    except SyntaxError:
+        return text
 
 
 def complexity_errors(
