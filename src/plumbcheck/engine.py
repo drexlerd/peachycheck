@@ -97,8 +97,6 @@ GUIDELINE_FIELDS: Final = {
     "advisory": bool,
     "link": str,
     "cite": str,
-    "good": str,
-    "bad": str,
     "details": str,
     "checked_by": list,
     "judged_by": str,
@@ -189,8 +187,6 @@ class Guideline:
     advisory: bool = False
     link: str = ""
     cite: str = ""
-    good: str = ""
-    bad: str = ""
     details: str = ""
     checked_by: tuple[str, ...] = ()
     judged_by: str = ""
@@ -592,11 +588,11 @@ def guides() -> dict[str, sources.Source]:
     return sources.manifest(STANDARDS)
 
 
-def curations(source: sources.Source) -> dict[str, sources.Curation]:
-    """What the overlay of ``source``'s language adds to its rules."""
+def curations(source: sources.Source) -> dict[str, tuple[str, ...]]:
+    """The checkers the overlay of ``source``'s language maps to its rules."""
     language = load().get(source.language)
     return {
-        g.id: sources.Curation(g.checked_by, g.good, g.bad)
+        g.id: g.checked_by
         for g in (language.guidelines if language else ())
         if g.source == source.id
     }
@@ -608,8 +604,7 @@ def _render(
     """The folder, files and index of ``source``'s tree, from its copy."""
     folder = sources.tree_folder(source, STANDARDS, CACHE)
     copy = sources.fetch(source, folder)
-    examples = f"standards/{LANGUAGES}/{source.language}"
-    files, rules = sources.render(source, copy, curations(source), examples)
+    files, rules = sources.render(source, copy, curations(source))
     return folder, files, rules
 
 
@@ -781,7 +776,7 @@ def _activation(
         files=tuple(sorted(changed)),
         cite=tuple(sorted({g.cite for g in prompted if g.cite})),
         checks=tuple(language.checkers()),
-        guidelines=tuple(_prompted(language, g, root) for g in prompted),
+        guidelines=tuple(_prompted(g, root) for g in prompted),
         sha256=hashlib.sha256(language.text.encode()).hexdigest(),
         guides=tuple(_guide_of(s, root) for s in _guides_of(language)),
     )
@@ -819,7 +814,7 @@ def resolved(
     )
 
 
-def _prompted(language: Language, g: Guideline, root: Path) -> dict[str, Any]:
+def _prompted(g: Guideline, root: Path) -> dict[str, Any]:
     """A guideline as the prompt shows it: its text, checkers and leaf."""
     source, entry = resolved(g)
     return {
@@ -832,20 +827,7 @@ def _prompted(language: Language, g: Guideline, root: Path) -> dict[str, Any]:
         "pointer": location(root, source, entry.path)
         if source and entry
         else "",
-        "example": _example(language, g),
     }
-
-
-def _example(language: Language, guideline: Guideline) -> str:
-    """The good example the prompt shows with ``guideline``, or "".
-
-    Only a guideline no guide covers and no checker enforces shows one (the
-    Verdog JSON); checked examples are checker tests, guides carry their own.
-    """
-    if guideline.checked_by or guideline.rule:
-        return ""
-    path = Path(language.path) / guideline.good
-    return path.read_text().strip() if guideline.good and path.is_file() else ""
 
 
 def for_loop(
@@ -1046,17 +1028,20 @@ def _generated(root: Path) -> set[str]:
     return {s["path"] for s in sources if s.get("ownership") == "generated"}
 
 
-def _examples(paths: Iterable[str]) -> set[str]:
-    """The example files and pinned guides of the instance.
-
-    Examples violate the rules on purpose; guides keep their authors' style.
-    """
+def _references(paths: Iterable[str]) -> set[str]:
+    """The pinned guides of the instance; they keep their authors' style."""
     return {
         path
         for path in paths
         if Path(path).parts[:1] == ("standards",)
-        and {"examples", REFERENCES} & set(Path(path).parts)
+        and REFERENCES in Path(path).parts
     }
+
+
+def _authored(root: Path, changed: Iterable[str]) -> set[str]:
+    """The changed files still present that are neither generated nor guides."""
+    present = {p for p in changed if (root / p).is_file()}
+    return present - _generated(root) - _references(present)
 
 
 def check_errors(
@@ -1068,12 +1053,13 @@ def check_errors(
     """Changed files that gain findings of an active language's checkers.
 
     ``changed`` are paths relative to ``root``. Generated files of a Verdog
-    project keep the compiler's style. A missing tool is an error.
+    project keep the compiler's style; a deleted file gains nothing. A
+    missing tool is an error.
     """
     # check: style.google_python
     # check: style.google_typescript
     # check: style.cpp_core
-    paths = set(changed) - _generated(root) - _examples(changed)
+    paths = _authored(root, changed)
     jobs = [
         (
             activation,
@@ -1320,7 +1306,7 @@ def complexity_errors(
     """
     tests = load()["python"].tests
     errors: list[str] = []
-    for path in sorted(set(changed) - _examples(changed)):
+    for path in sorted(set(changed) - _references(changed)):
         is_test = any(fnmatch.fnmatch(path, glob) for glob in tests)
         if not is_test and path.endswith(".py") and (root / path).is_file():
             errors += _complex_functions(root, base, path)
@@ -1414,12 +1400,9 @@ def _rule_error(language: Language, g: Guideline, name: str) -> str:
 
 
 def _missing_files(language: Language, g: Guideline) -> list[str]:
-    return [
-        f"{g.key}: {name} file {getattr(g, name)} does not exist"
-        for name in ("good", "bad", "details")
-        if getattr(g, name)
-        and not (Path(language.path) / getattr(g, name)).is_file()
-    ]
+    if g.details and not (Path(language.path) / g.details).is_file():
+        return [f"{g.key}: details file {g.details} does not exist"]
+    return []
 
 
 def lint(language: Language) -> list[str]:
@@ -1445,82 +1428,6 @@ def lint_all() -> list[str]:
     return [error for language in load().values() for error in lint(language)]
 
 
-def _example_build(folder: Path, build: Path) -> Path:
-    """A compile database for the examples of ``folder``, for C++ checkers.
-
-    Clang needs absolute paths, so the database is written per run, not kept.
-    """
-    examples = sorted((folder / "examples").glob("*.c*"))
-    (build / "build").mkdir(parents=True, exist_ok=True)
-    (build / "build" / "compile_commands.json").write_text(
-        json.dumps(
-            [
-                {
-                    "directory": str(folder),
-                    "file": str(path),
-                    "command": f"c++ -std=c++20 -c {path}",
-                }
-                for path in examples
-            ]
-        )
-    )
-    return build
-
-
-def _example_failures(
-    language: Language, g: Guideline, check: Check, folder: Path
-) -> list[str]:
-    """Whether ``check`` flags ``g``'s bad example and spares its good one.
-
-    Only findings of the checks ``g`` maps count.
-    """
-    try:
-        with tempfile.TemporaryDirectory() as scratch:
-            build = _example_build(folder, Path(scratch))
-            found = {
-                name: _mapped_findings(language, g, check, folder, path, build)
-                for name, path in (("bad", g.bad), ("good", g.good))
-                if path
-            }
-    except ToolMissingError as missing:
-        return [f"{g.key}: {missing}"]
-    failures: list[str] = []
-    if g.bad and not found["bad"]:
-        failures.append(f"{g.key}: {check.tool} does not flag {g.bad}.")
-    if g.good and found["good"]:
-        failures.append(f"{g.key}: {check.tool} flags {g.good}.")
-    return failures
-
-
-def _mapped_findings(
-    language: Language,
-    g: Guideline,
-    check: Check,
-    folder: Path,
-    path: str,
-    build: Path,
-) -> list[Violation]:
-    """The findings in ``path`` whose check ``g`` maps."""
-    return [
-        v
-        for v in findings(check, language.title, folder, [path], build)
-        if any(matches(e, check.tool, v.check) for e in g.checked_by)
-    ]
-
-
-def example_tests(standards: Standards) -> list[str]:
-    """Guidelines whose tool misses the bad example or flags the good one."""
-    failures: list[str] = []
-    for language in standards.values():
-        checks = {c.tool: c for c in language.checkers()}
-        folder = Path(language.path).resolve()
-        for g in language.guidelines:
-            check = checks.get(g.tools[0]) if g.tools else None
-            if check is not None and (g.good or g.bad):
-                failures += _example_failures(language, g, check, folder)
-    return failures
-
-
 def matches(entry: str, tool: str, check: str) -> bool:
     """Whether a ``checked_by`` entry (``tool`` or ``tool:glob``) covers it."""
     name, _, pattern = entry.partition(":")
@@ -1531,7 +1438,7 @@ def coverage() -> str:
     """The coverage of the guides by checkers, and its gaps.
 
     Per guide and top section the rules a checker covers and the prose ones;
-    then the curated guidelines without a verified example or summary, and
+    then the curated guidelines without a summary, and
     the checks no guideline maps.
     """
     loaded = load()
@@ -1572,15 +1479,11 @@ def _top(entry: sources.Rule, rules: Mapping[str, sources.Rule]) -> str:
 
 
 def _gaps(language: Language) -> list[str]:
-    """Curated guidelines without a verified example or a summary."""
-    curated = [g for g in language.guidelines if g.priority]
-    found = [
-        f"- {g.key}: no verified example"
-        for g in curated
-        if g.checked_by and not (g.good or g.bad)
-    ]
-    return found + [
-        f"- {g.key}: no summary" for g in curated if _unsummarized(g)
+    """Curated guidelines without a summary."""
+    return [
+        f"- {g.key}: no summary"
+        for g in language.guidelines
+        if g.priority and _unsummarized(g)
     ]
 
 

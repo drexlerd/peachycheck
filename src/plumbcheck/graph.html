@@ -127,7 +127,6 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
         <th scope="col">Advisory<span class="hint">a recommendation</span></th>
         <th scope="col">Checked by<span class="hint">the tool or gate metric that enforces it</span></th>
         <th scope="col">Sources<span class="hint">why it holds</span></th>
-        <th scope="col">Examples<span class="hint">good and bad files</span></th>
         <th scope="col">Defined at<span class="hint">file and line</span></th>
       </tr></thead>
       <tbody></tbody>
@@ -305,7 +304,6 @@ function guidelinesTable() {
     cell(tr, [nodes.get(r.node.parent).data.title]); cell(tr, [r.kind]);
     cell(tr, [d.advisory ? "advisory" : ""]); cell(tr, [(d.checked_by || []).join(", ") || (d.judged_by ? "gate: " + d.judged_by : "")]);
     cell(tr, [[...r.source, ...(d.link ? ["link"] : [])].join(", ")]);
-    cell(tr, [[d.good && "good", d.bad && "bad"].filter(Boolean).join(", ")]);
     cell(tr, [el("span", d.path.split("/").pop() + ":" + d.line, "mono")]);
     body.append(tr);
   });
@@ -571,7 +569,6 @@ function panel() {
     row(dl, "Rule", d.reference, true);
     row(dl, "License", [d.license, d.attribution].filter(Boolean).join(" · "));
     row(dl, "Sources", targets(n.id, "cites").map(s => link(s)));
-    row(dl, "Examples", [d.good && "good: " + d.good, d.bad && "bad: " + d.bad].filter(Boolean).join(" · "), true);
     row(dl, "Details", d.details, true);
     row(dl, "Language", link(nodes.get(n.parent), nodes.get(n.parent).data.title));
     row(dl, "Defined at", where(d.path) + ":" + d.line, true);

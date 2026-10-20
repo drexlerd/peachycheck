@@ -742,15 +742,6 @@ class Rule:
     quoted_good: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class Curation:
-    """What the overlay adds to a rule: its checkers and verified examples."""
-
-    checked_by: tuple[str, ...] = ()
-    good: str = ""
-    bad: str = ""
-
-
 def _component(node: Node, parent: Node) -> str:
     """A node's name in its parent's folder: ``smart``, ``2.1-lint``."""
     name = node.id
@@ -857,19 +848,19 @@ def _dedent(block: str) -> str:
 
 
 def entries(
-    source: Source, root: Node, overlay: Mapping[str, Curation]
+    source: Source, root: Node, overlay: Mapping[str, tuple[str, ...]]
 ) -> list[Rule]:
-    """The index of ``root``: one entry per node, parents first."""
+    """The index of ``root``: one entry per node, parents first.
+
+    ``overlay`` holds the checkers the overlay maps to a rule, by key.
+    """
     _assign_paths(root)
     found: list[Rule] = []
 
     def visit(node: Node, parent: str, section: tuple[str, ...]) -> None:
         key = f"{source.id}/{node.id}"
         leaves = node.leaves()
-        checked = sum(
-            bool(overlay.get(f"{source.id}/{n.id}", Curation()).checked_by)
-            for n in leaves
-        )
+        checked = sum(bool(overlay.get(f"{source.id}/{n.id}")) for n in leaves)
         bad, good = (
             _quoted(node, source.parser) if not node.children else ((), ())
         )
@@ -885,7 +876,7 @@ def entries(
                 section=section,
                 rules=len(leaves),
                 checked=checked,
-                checked_by=overlay.get(key, Curation()).checked_by,
+                checked_by=overlay.get(key, ()),
                 quoted_bad=bad,
                 quoted_good=good,
             )
@@ -953,9 +944,7 @@ def _index_page(source: Source, node: Node, rules: Mapping[str, Rule]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _leaf_page(
-    source: Source, node: Node, rule: Rule, curation: Curation, examples: str
-) -> str:
+def _leaf_page(source: Source, node: Node, rule: Rule) -> str:
     header = [
         f"# {node.title}",
         "",
@@ -964,10 +953,6 @@ def _leaf_page(
         f"- upstream: {rule.link}",
         f"- enforcement: {enforcement(rule.checked_by)}",
     ]
-    for kind in ("bad", "good"):
-        path = getattr(curation, kind)
-        if path:
-            header.append(f"- verified {kind} example: `{examples}/{path}`")
     header += [f"- {notice(source)}", "", "---", "", node.text.strip()]
     return "\n".join(header) + "\n"
 
@@ -1027,8 +1012,7 @@ def _attribution_page(source: Source) -> str:
 def render(
     source: Source,
     copy: Path,
-    overlay: Mapping[str, Curation],
-    examples: str = "",
+    overlay: Mapping[str, tuple[str, ...]],
 ) -> tuple[dict[str, str], list[Rule]]:
     """The files of ``source``'s tree, by path, and its index.
 
@@ -1053,9 +1037,7 @@ def render(
         files[node.path] = (
             _index_page(source, node, by_id)
             if node.children
-            else _leaf_page(
-                source, node, by_id[key], overlay.get(key, Curation()), examples
-            )
+            else _leaf_page(source, node, by_id[key])
         )
     return files, rules
 
