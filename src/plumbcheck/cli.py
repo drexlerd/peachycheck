@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -164,30 +164,42 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def _sync(root: Path, check_only: bool) -> int:
+    differing = sync(root, check=check_only)
+    verb = "differs from the standards" if check_only else "written"
+    print("\n".join(f"{path}: {verb}" for path in differing) or "in sync")
+    return 1 if differing and check_only else 0
+
+
+def _types(root: Path) -> int:
+    print("\n".join(types_of(root)) or "no known type")
+    return 0
+
+
+def _show(root: Path, options: argparse.Namespace) -> int:
+    if options.html is None:
+        return show(root, options.files)
+    page = engine.graph_page(engine.graph(), root.name)
+    options.html.write_text(f"{engine.PAGE_FRAME}\n{page}")
+    print(options.html)
+    return 0
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     """Run one command of ``verdog-standards``."""
     options = parser().parse_args(arguments)
     root: Path = options.root.resolve()
-    if options.command == "check":
-        return check(options.tests)
-    if options.command == "check-branch":
-        return check_branch(root, options.base or base_of(root))
-    if options.command == "types":
-        print("\n".join(types_of(root)) or "no known type")
-        return 0
-    if options.command == "sync":
-        differing = sync(root, check=options.check)
-        verb = "differs from the standards" if options.check else "written"
-        print("\n".join(f"{path}: {verb}" for path in differing) or "in sync")
-        return 1 if differing and options.check else 0
-    if options.command == "run":
-        return run(root)
-    if options.html:
-        page = engine.graph_page(engine.graph(), root.name)
-        options.html.write_text(f"{engine.PAGE_FRAME}\n{page}")
-        print(options.html)
-        return 0
-    return show(root, options.files)
+    commands: dict[str, Callable[[], int]] = {
+        "check": lambda: check(options.tests),
+        "check-branch": lambda: check_branch(
+            root, options.base or base_of(root)
+        ),
+        "types": lambda: _types(root),
+        "sync": lambda: _sync(root, options.check),
+        "run": lambda: run(root),
+        "show": lambda: _show(root, options),
+    }
+    return commands[options.command]()
 
 
 if __name__ == "__main__":

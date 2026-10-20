@@ -120,7 +120,7 @@ TOOLS: Final = CACHE / "gts"
 BUILD_DIRECTORIES: list[str] = ["build", "build/standards"]
 
 
-class ToolMissing(RuntimeError):
+class ToolMissingError(RuntimeError):
     """A check needs a tool that is not installed."""
 
 
@@ -313,10 +313,7 @@ def _tool(
     }
     errors = _field_errors(plain, TOOL_FIELDS, f"{language}/{name}")
     role = str(table.get("role", "checker"))
-    if role not in ROLES:
-        errors.append(f"{language}/{name}: role must be one of {ROLES}")
-    if role == "checker" and not table.get("run"):
-        errors.append(f"{language}/{name}: a checker needs a run command")
+    errors += _role_errors(f"{language}/{name}", role, bool(table.get("run")))
     return Tool(
         language=language,
         name=name,
@@ -337,33 +334,38 @@ def _tool(
     )
 
 
+def _role_errors(key: str, role: str, runs: bool) -> list[str]:
+    errors = [] if role in ROLES else [f"{key}: role must be one of {ROLES}"]
+    if role == "checker" and not runs:
+        errors.append(f"{key}: a checker needs a run command")
+    return errors
+
+
+def _header_errors(
+    name: str, header: dict[str, Any], activates: str
+) -> list[str]:
+    """What ``language.toml`` of language ``name`` lacks or gets wrong."""
+    errors = _field_errors(header, LANGUAGE_FIELDS, name)
+    if not header.get("title"):
+        errors.append(f"{name}: the language needs a title")
+    if activates not in ACTIVATIONS:
+        errors.append(f"{name}: activates must be one of {ACTIVATIONS}")
+    if activates == "marker" and not header.get("marker"):
+        errors.append(f"{name}: a language activated by marker needs one")
+    needs_extensions = name != GENERAL and activates == "extension"
+    if needs_extensions and not header.get("extensions"):
+        errors.append(f"{name}: the language needs file extensions")
+    return errors
+
+
 def parse(folder: Path, name: str) -> Language:
     """The language in ``folder``; ``ValueError`` on a TOML syntax error."""
     header, header_text = _read(folder / "language.toml")
     found, text = _read(folder / "guidelines.toml")
     tools, tools_text = _read(folder / "tools.toml")
     where = str(folder / "language.toml")
-    errors = [
-        (where, 1, error)
-        for error in _field_errors(header, LANGUAGE_FIELDS, name)
-    ]
-    if not header.get("title"):
-        errors.append((where, 1, f"{name}: the language needs a title"))
     activates = str(header.get("activates", "extension"))
-    if activates not in ACTIVATIONS:
-        errors.append(
-            (where, 1, f"{name}: activates must be one of {ACTIVATIONS}")
-        )
-    if activates == "marker" and not header.get("marker"):
-        errors.append(
-            (where, 1, f"{name}: a language activated by marker needs one")
-        )
-    if (
-        name != GENERAL
-        and activates == "extension"
-        and not header.get("extensions")
-    ):
-        errors.append((where, 1, f"{name}: the language needs file extensions"))
+    errors = [(where, 1, e) for e in _header_errors(name, header, activates)]
     return Language(
         id=name,
         title=str(header.get("title", name)),
@@ -525,22 +527,9 @@ def sections(path: Path) -> dict[str, str]:
         if rst and (label := RST_LABEL.match(line)):
             pending.append(label[1])
             continue
-        start, level, title, names = i, 0, "", []
-        if not rst and (md := MD_HEADING.match(line)):
-            level, title, names = len(md[1]), md[2], [md[3]] if md[3] else []
-        elif not rst and (html := HTML_HEADING.search(line)):
-            level, title = int(html[1]), html[3]
-            names = re.findall(r'id="([^"]+)"', html[2])
-        elif rst and i and RST_UNDERLINE.match(line):
-            above = lines[i - 1].strip()
-            if (
-                above
-                and not above.startswith("..")
-                and not RST_UNDERLINE.match(above)
-            ):
-                if line[0] not in order:
-                    order.append(line[0])
-                start, level, title = i - 1, order.index(line[0]) + 1, above
+        start, level, title, names = (
+            _rst_heading(lines, i, order) if rst else _heading(line, i)
+        )
         if level:
             heads.append((start, level, {*pending, *names, _slug(title)}))
             pending = []
@@ -552,6 +541,31 @@ def sections(path: Path) -> dict[str, str]:
         for name in names:
             found.setdefault(name, "\n".join(lines[start:end]))
     return found
+
+
+Heading = tuple[int, int, str, list[str]]  # start line, level, title, anchors
+
+
+def _heading(line: str, i: int) -> Heading:
+    """A Markdown or HTML heading at line ``i``; level 0 if none."""
+    if md := MD_HEADING.match(line):
+        return i, len(md[1]), md[2], [md[3]] if md[3] else []
+    if html := HTML_HEADING.search(line):
+        return i, int(html[1]), html[3], re.findall(r'id="([^"]+)"', html[2])
+    return i, 0, "", []
+
+
+def _rst_heading(lines: list[str], i: int, order: list[str]) -> Heading:
+    """A reST heading underlined at line ``i``; ``order`` ranks underlines."""
+    line = lines[i]
+    above = lines[i - 1].strip() if i else ""
+    if not (RST_UNDERLINE.match(line) and above) or above.startswith(".."):
+        return i, 0, "", []
+    if RST_UNDERLINE.match(above):
+        return i, 0, "", []
+    if line[0] not in order:
+        order.append(line[0])
+    return i - 1, order.index(line[0]) + 1, above, []
 
 
 def _slug(title: str) -> str:
@@ -762,7 +776,7 @@ def _gts() -> Path:
     cache = TOOLS.expanduser()
     if not (cache / "node_modules" / ".bin" / "eslint").is_file():
         if shutil.which("npm") is None:
-            raise ToolMissing(
+            raise ToolMissingError(
                 "Google TypeScript style needs npm to install gts."
             )
         cache.mkdir(parents=True, exist_ok=True)
@@ -782,7 +796,7 @@ def _compile_commands(build: Path) -> str:
     for directory in BUILD_DIRECTORIES:
         if (build / directory / "compile_commands.json").is_file():
             return str(build / directory)
-    raise ToolMissing(
+    raise ToolMissingError(
         "C++ checks need compile_commands.json from the CMake setup."
     )
 
@@ -794,7 +808,7 @@ def command(
     tool = shlex.split(check.run)[0]
     if "{" not in tool and shutil.which(tool, path=_search_path()) is None:
         hint = f"; install it with {check.install}" if check.install else ""
-        raise ToolMissing(f"{title} needs {tool}{hint}.")
+        raise ToolMissingError(f"{title} needs {tool}{hint}.")
     values: dict[str, str] = {
         "files": shlex.join(paths),
         "python": sys.executable,
@@ -832,7 +846,7 @@ def count(
         env={**os.environ, "PATH": _search_path(), **check.env},
     )
     if result.returncode not in check.ok:
-        raise ToolMissing(
+        raise ToolMissingError(
             f"{title} check {check.tool} failed (exit {result.returncode}):\n"
             + (result.stderr or result.stdout)[-1500:]
         )
@@ -934,7 +948,7 @@ def _regressions(
     try:
         after = count(check, activation.title, root, paths, root)
         earlier = count(check, activation.title, before, paths, root)
-    except ToolMissing as missing:
+    except ToolMissingError as missing:
         return [str(missing)]
     follow = (
         f"follow the {activation.title} guidelines it checks: "
@@ -1014,34 +1028,36 @@ def complexity_errors(
     """New or changed Python functions above ``COMPLEXITY_LIMIT`` (radon).
 
     A function counts as changed when its source differs from the base's; an
-    untouched complex function in a changed file is not this change's.
+    untouched complex function in a changed file is not this change's. Tests
+    are exempt: every assertion counts as a branch.
     """
+    tests = load()["python"].tests
     errors: list[str] = []
     for path in sorted(set(changed) - _examples(changed)):
-        file = root / path
-        if not path.endswith(".py") or not file.is_file():
-            continue
-        earlier = subprocess.run(
-            ["git", "show", f"{base}:{path}"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-        )
-        try:
-            before = (
-                _functions(earlier.stdout) if earlier.returncode == 0 else {}
-            )
-            after = _functions(file.read_text())
-        except SyntaxError:
-            continue  # ponytail: the type checker and tests report broken files
-        errors += [
-            f"{path}: {name} has cyclomatic complexity {cc} > "
-            f"{COMPLEXITY_LIMIT}; "
-            "split it into smaller functions."
-            for name, (cc, text) in after.items()
-            if cc > COMPLEXITY_LIMIT and before.get(name, (0, ""))[1] != text
-        ]
+        is_test = any(fnmatch.fnmatch(path, glob) for glob in tests)
+        if not is_test and path.endswith(".py") and (root / path).is_file():
+            errors += _complex_functions(root, base, path)
     return errors
+
+
+def _complex_functions(root: Path, base: str, path: str) -> list[str]:
+    earlier = subprocess.run(
+        ["git", "show", f"{base}:{path}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        before = _functions(earlier.stdout) if earlier.returncode == 0 else {}
+        after = _functions((root / path).read_text())
+    except SyntaxError:
+        return []  # ponytail: the type checker and tests report broken files
+    return [
+        f"{path}: {name} has cyclomatic complexity {cc} > "
+        f"{COMPLEXITY_LIMIT}; split it into smaller functions."
+        for name, (cc, text) in after.items()
+        if cc > COMPLEXITY_LIMIT and before.get(name, (0, ""))[1] != text
+    ]
 
 
 def literature() -> dict[str, dict[str, str]]:
@@ -1063,38 +1079,50 @@ def citations() -> set[str]:
     return set(re.findall(r"^@\w+\{([^,\s]+),", text, re.M))
 
 
+def _guideline_errors(
+    language: Language,
+    g: Guideline,
+    known: set[str],
+    metrics: Mapping[str, Any],
+    checkers: set[str],
+) -> list[str]:
+    """What is wrong with guideline ``g`` beyond its fields' types."""
+    found = list(g.errors)
+    if g.cite and g.cite not in known:
+        found.append(f"{g.key}: unknown cite key {g.cite!r}")
+    if g.checked_by and g.checked_by not in checkers:
+        found.append(
+            f"{g.key}: {g.checked_by!r} is not a checker of {language.id}"
+        )
+    if g.judged_by and g.judged_by not in metrics:
+        found.append(f"{g.key}: {g.judged_by!r} is not a metric")
+    if g.reference and section(language, g.reference) is None:
+        found.append(f"{g.key}: reference {g.reference} is not a section")
+    return found + _missing_files(language, g)
+
+
+def _missing_files(language: Language, g: Guideline) -> list[str]:
+    return [
+        f"{g.key}: {name} file {getattr(g, name)} does not exist"
+        for name in ("good", "bad", "details")
+        if getattr(g, name)
+        and not (Path(language.path) / getattr(g, name)).is_file()
+    ]
+
+
 def lint(language: Language) -> list[str]:
     """Format errors of one language folder, each naming its file and line."""
     found = list(language.errors)
     known = citations()
     metrics = declarations("metrics")
     checkers = {t.name for t in language.tools if t.role == "checker"}
-    folder = Path(language.path)
     for g in language.guidelines:
-        at = (g.path, g.line)
-        found += [(*at, error) for error in g.errors]
-        if g.cite and g.cite not in known:
-            found.append((*at, f"{g.key}: unknown cite key {g.cite!r}"))
-        if g.checked_by and g.checked_by not in checkers:
-            found.append(
-                (
-                    *at,
-                    f"{g.key}: {g.checked_by!r} is not a checker of "
-                    f"{language.id}",
-                )
+        found += [
+            (g.path, g.line, error)
+            for error in _guideline_errors(
+                language, g, known, metrics, checkers
             )
-        if g.judged_by and g.judged_by not in metrics:
-            found.append((*at, f"{g.key}: {g.judged_by!r} is not a metric"))
-        if g.reference and section(language, g.reference) is None:
-            found.append(
-                (*at, f"{g.key}: reference {g.reference} is not a section")
-            )
-        for name in ("good", "bad", "details"):
-            target = getattr(g, name)
-            if target and not (folder / target).is_file():
-                found.append(
-                    (*at, f"{g.key}: {name} file {target} does not exist")
-                )
+        ]
     for tool in language.tools:
         found += [(tool.path, tool.line, error) for error in tool.errors]
     return [f"{path}:{line}: {message}." for path, line, message in found]
@@ -1127,6 +1155,28 @@ def _example_build(folder: Path, build: Path) -> Path:
     return build
 
 
+def _example_failures(
+    language: Language, g: Guideline, check: Check, folder: Path
+) -> list[str]:
+    """Whether ``check`` flags ``g``'s bad example and spares its good one."""
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            build = _example_build(folder, Path(scratch))
+            found = {
+                name: count(check, language.title, folder, [path], build)[path]
+                for name, path in (("bad", g.bad), ("good", g.good))
+                if path
+            }
+    except ToolMissingError as missing:
+        return [f"{g.key}: {missing}"]
+    failures: list[str] = []
+    if g.bad and not found["bad"]:
+        failures.append(f"{g.key}: {g.checked_by} does not flag {g.bad}.")
+    if g.good and found["good"]:
+        failures.append(f"{g.key}: {g.checked_by} flags {g.good}.")
+    return failures
+
+
 def example_tests(standards: Standards) -> list[str]:
     """Guidelines whose tool misses the bad example or flags the good one."""
     failures: list[str] = []
@@ -1135,27 +1185,8 @@ def example_tests(standards: Standards) -> list[str]:
         folder = Path(language.path).resolve()
         for g in language.guidelines:
             check = checks.get(g.checked_by)
-            if check is None or not (g.good or g.bad):
-                continue
-            try:
-                with tempfile.TemporaryDirectory() as scratch:
-                    build = _example_build(folder, Path(scratch))
-                    found = {
-                        name: count(
-                            check, language.title, folder, [path], build
-                        )[path]
-                        for name, path in (("bad", g.bad), ("good", g.good))
-                        if path
-                    }
-            except ToolMissing as missing:
-                failures.append(f"{g.key}: {missing}")
-                continue
-            if g.bad and not found["bad"]:
-                failures.append(
-                    f"{g.key}: {g.checked_by} does not flag {g.bad}."
-                )
-            if g.good and found["good"]:
-                failures.append(f"{g.key}: {g.checked_by} flags {g.good}.")
+            if check is not None and (g.good or g.bad):
+                failures += _example_failures(language, g, check, folder)
     return failures
 
 
@@ -1256,59 +1287,82 @@ def _language_node(graph: Graph, language: Language) -> None:
         )
     )
     for tool in language.tools:
-        tool_id = graph.add(
-            Node(
-                f"tool:{language.id}/{tool.name}",
-                "tool",
-                tool.name,
-                node,
-                {**asdict(tool), "errors": None},
-            )
-        )
-        if tool.role == "retriever":
-            wanted = [s.get("loops") for s in tool.retrieval.values()]
-            reached = (
-                loops()
-                if not all(wanted)
-                else sorted({loop for w in wanted for loop in w or ()})
-            )
-            for loop in reached:
-                graph.link(graph.shared("loop", loop), tool_id, "retrieves")
-        if tool.cite:
-            graph.link(
-                tool_id,
-                graph.shared("source", tool.cite, kind="literature"),
-                "cites",
-            )
+        _tool_node(graph, node, tool)
     for g in language.guidelines:
-        guideline = graph.add(
-            Node(
-                f"guideline:{g.key}",
-                "guideline",
-                g.id,
-                node,
-                {
-                    **asdict(g),
-                    "key": g.key,
-                    "errors": None,
-                    "section": (section(language, g.reference) or "")[
-                        :SECTION_CHARS
-                    ]
-                    if g.reference
-                    else "",
-                },
-            )
+        _guideline_node(graph, node, language, g)
+
+
+def _tool_node(graph: Graph, parent: str, tool: Tool) -> None:
+    tool_id = graph.add(
+        Node(
+            f"tool:{tool.language}/{tool.name}",
+            "tool",
+            tool.name,
+            parent,
+            {**asdict(tool), "errors": None},
         )
-        if g.checked_by and f"tool:{language.id}/{g.checked_by}" in graph.nodes:
-            graph.link(
-                guideline, f"tool:{language.id}/{g.checked_by}", "checked_by"
-            )
-        if g.cite:
-            graph.link(
-                guideline,
-                graph.shared("source", g.cite, kind="literature"),
-                "cites",
-            )
+    )
+    if tool.role == "retriever":
+        wanted = [s.get("loops") for s in tool.retrieval.values()]
+        reached = (
+            loops()
+            if not all(wanted)
+            else sorted({loop for w in wanted for loop in w or ()})
+        )
+        for loop in reached:
+            graph.link(graph.shared("loop", loop), tool_id, "retrieves")
+    if tool.cite:
+        source = graph.shared("source", tool.cite, kind="literature")
+        graph.link(tool_id, source, "cites")
+
+
+def _guideline_node(
+    graph: Graph, parent: str, language: Language, g: Guideline
+) -> None:
+    text = section(language, g.reference) if g.reference else ""
+    guideline = graph.add(
+        Node(
+            f"guideline:{g.key}",
+            "guideline",
+            g.id,
+            parent,
+            {
+                **asdict(g),
+                "key": g.key,
+                "errors": None,
+                "section": (text or "")[:SECTION_CHARS],
+            },
+        )
+    )
+    tool = f"tool:{language.id}/{g.checked_by}"
+    if g.checked_by and tool in graph.nodes:
+        graph.link(guideline, tool, "checked_by")
+    if g.cite:
+        source = graph.shared("source", g.cite, kind="literature")
+        graph.link(guideline, source, "cites")
+
+
+def _metric_node(graph: Graph, name: str, metric: dict[str, Any]) -> None:
+    node = graph.shared("metric", name, **metric)
+    if metric.get("status") == "planned":
+        return  # Nothing measures it yet, so it judges nothing.
+    # An empty ``loops`` means every loop.
+    for loop in metric.get("loops") or loops():
+        graph.link(node, graph.shared("loop", loop), "judges")
+    for key in metric.get("cite", ()):
+        source = graph.shared("source", key, kind="literature")
+        graph.link(node, source, "cites")
+    for tool in metric.get("measured_by", ()):
+        if f"tool:{GENERAL}/{tool}" in graph.nodes:
+            graph.link(node, f"tool:{GENERAL}/{tool}", "measured_by")
+
+
+def _judged_by(graph: Graph) -> None:
+    """Link each guideline a metric enforces to that metric."""
+    for guideline in [n for n in graph.nodes.values() if n.type == "guideline"]:
+        metric = f"metric:{guideline.data['judged_by']}"
+        if guideline.data["judged_by"] and metric in graph.nodes:
+            graph.link(guideline.id, metric, "judged_by")
 
 
 def graph() -> Graph:
@@ -1317,34 +1371,14 @@ def graph() -> Graph:
     for language in load().values():
         _language_node(result, language)
     for name, metric in declarations("metrics").items():
-        node = result.shared("metric", name, **metric)
-        if metric.get("status") == "planned":
-            continue  # Nothing measures it yet, so it judges nothing.
-        # An empty ``loops`` means every loop.
-        for loop in metric.get("loops") or loops():
-            result.link(node, result.shared("loop", loop), "judges")
-        for key in metric.get("cite", ()):
-            result.link(
-                node, result.shared("source", key, kind="literature"), "cites"
-            )
-        for tool in metric.get("measured_by", ()):
-            if f"tool:{GENERAL}/{tool}" in result.nodes:
-                result.link(node, f"tool:{GENERAL}/{tool}", "measured_by")
-    # A guideline the gate enforces points to the metric that judges it.
-    for guideline in [
-        n for n in result.nodes.values() if n.type == "guideline"
-    ]:
-        metric = f"metric:{guideline.data['judged_by']}"
-        if guideline.data["judged_by"] and metric in result.nodes:
-            result.link(guideline.id, metric, "judged_by")
-    names = CATEGORIES
+        _metric_node(result, name, metric)
+    _judged_by(result)
     entries = literature()
     for node in result.nodes.values():
-        if node.type == "source":
-            entry = entries.get(node.label, {})
-            node.data.update(
-                entry, category=names.get(entry.get("keywords", ""), "")
-            )
+        entry = entries.get(node.label, {}) if node.type == "source" else None
+        if entry is not None:
+            category = CATEGORIES.get(entry.get("keywords", ""), "")
+            node.data.update(entry, category=category)
     return result
 
 

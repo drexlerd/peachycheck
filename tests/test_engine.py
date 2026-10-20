@@ -701,7 +701,10 @@ def test_no_new_or_changed_function_above_the_complexity_limit(
     assert standards.complexity_errors(root, base, ["old.py"]) == []
     (root / "old.py").write_text(COMPLEX.replace("return -1", "return -2"))
     (root / "new.py").write_text(COMPLEX)
-    assert standards.complexity_errors(root, base, ["new.py", "old.py"]) == [
+    (root / "tests").mkdir()
+    (root / "tests" / "test_new.py").write_text(COMPLEX)
+    changed = ["new.py", "old.py", "tests/test_new.py"]
+    assert standards.complexity_errors(root, base, changed) == [
         "new.py: branchy has cyclomatic complexity 12 > 10; "
         "split it into smaller functions.",
         "old.py: branchy has cyclomatic complexity 12 > 10; "

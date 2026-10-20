@@ -41,7 +41,7 @@ The workflow installs `verdog-standards`, then fails when
 1. a root tool configuration differs from its template (`sync --check`),
 2. a command of the repository's types fails (`run`),
 3. a changed file gains findings of its language's checkers, or a new or
-   changed Python function has a cyclomatic complexity above 10
+   changed Python function outside tests has a cyclomatic complexity above 10
    (`check-branch`).
 
 Locally:
