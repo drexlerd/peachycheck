@@ -14,14 +14,15 @@ A guideline is a rule of a guide, named by its index id
 (``cpp-core-guidelines/R.20``) and curated in the overlay, or a house rule
 (``house/<id>`` in the overlay, ``<language>/<id>`` as its key). The prompt
 shows three levels: each active guide's top sections and the curated rules
-with their leaves; the agent looks up the levels below.
+with their leaves; the agent looks up the levels below; and a check's
+repair message names each new finding with its rule and leaf.
 
 A consumer such as auto-se adds what concerns only itself through ``LAYERS``
 (extra ``<kind>.toml`` and ``general/tools.toml`` roots), ``LOOPS``,
 ``CATEGORIES`` and ``CHECKS``; it never changes the organization's rules.
 
-Checks count findings per file and allow no regression: a new file must have
-none, and a changed file may not gain any compared with the base.
+Checks allow no new finding: a new file must have none, and a changed file
+may not gain one the base lacks (same file, check and message).
 """
 
 import ast
@@ -122,12 +123,16 @@ TOOL_FIELDS: Final = {
     "cite": str,
     "exclude": list,
     "list": str,
+    "check": str,
 }
 COMPLEXITY_LIMIT: Final = 10  # McCabe's threshold, as the gate's rule
 # A finding of a checker: ``path:line[:column]: ...``, except clang's notes.
 FINDING: Final = re.compile(
-    r"^(?P<path>[^\s:][^:\n]*):\d+(?::\d+)?: (?!note\b)", re.M
+    r"^(?P<path>[^\s:][^:\n]*):(?P<line>\d+)(?::\d+)?: (?!note\b)"
+    r"(?P<message>.*)$",
+    re.M,
 )
+SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
 GTS: Final = ("gts@5.3.1", "typescript@5.4.5")
 TOOLS: Final = CACHE / "gts"
 BUILD_DIRECTORIES: list[str] = ["build", "build/standards"]
@@ -148,6 +153,24 @@ class Check:
     ok: tuple[int, ...] = (0, 1)
     guidelines: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
+    # Finds a finding's check id (group ``check``) in its message.
+    pattern: str = ""
+    link: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Violation:
+    """One finding of a checker: where, which of its checks, what it says."""
+
+    path: str
+    line: int
+    check: str
+    message: str
+
+    @property
+    def same(self) -> tuple[str, str, str]:
+        """What a finding keeps when lines move: file, check and message."""
+        return (self.path, self.check, self.message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +242,7 @@ class Tool:
     cite: str = ""
     exclude: tuple[str, ...] = ()
     list: str = ""  # a command printing the checks the checker runs
+    check: str = ""  # finds the check id in a finding's message
     retrieval: dict[str, dict[str, Any]] = field(
         default_factory=dict[str, dict[str, Any]]
     )
@@ -253,6 +277,8 @@ class Language:
                 env=tool.env,
                 ok=tool.ok,
                 exclude=tool.exclude,
+                pattern=tool.check,
+                link=tool.link,
                 guidelines=tuple(
                     g.key for g in self.guidelines if tool.name in g.tools
                 ),
@@ -376,6 +402,7 @@ def _tool(
         cite=str(table.get("cite", "")),
         exclude=tuple(str(g) for g in table.get("exclude", ())),
         list=str(table.get("list", "")),
+        check=str(table.get("check", "")),
         retrieval={
             k: dict(v) for k, v in table.items() if k not in TOOL_FIELDS
         },
@@ -640,18 +667,27 @@ def rule(name: str) -> sources.Rule | None:
         return None  # ponytail: offline and not cached; shown without its text
 
 
-def location(root: Path, source: sources.Source, path: str) -> str:
+def location(
+    root: Path, source: sources.Source, path: str, *, here: bool = False
+) -> str:
     """Where an agent working in ``root`` opens ``path`` of ``source``'s tree.
 
-    The standards repository reads its committed trees; another repository
-    reads the copies ``copy_references`` put into its worktree.
+    A worktree reads the copies ``copy_references`` put into it, the
+    standards repository its committed trees. Elsewhere it is that copy's
+    path too, which a prompt's worktree gets; with ``here``, the tree on this
+    machine instead, for a check's message.
     """
+    copied = Path(WORKTREE_REFERENCES, source.id)
+    if (root / copied).is_dir():
+        return (copied / path).as_posix()
     folder = sources.tree_folder(source, STANDARDS, CACHE)
     if source.store == "commit" and folder.is_relative_to(STANDARDS.parent):
         mine = folder.relative_to(STANDARDS.parent)
         if (root / mine).is_dir():
             return (mine / path).as_posix()
-    return Path(WORKTREE_REFERENCES, source.id, path).as_posix()
+    return (
+        str(folder.expanduser() / path) if here else (copied / path).as_posix()
+    )
 
 
 def copy_references(root: Path) -> None:
@@ -862,6 +898,8 @@ def undump(record: str) -> list[Activation]:
                     ok=tuple(c["ok"]),
                     guidelines=tuple(c["guidelines"]),
                     exclude=tuple(c.get("exclude", ())),
+                    pattern=str(c.get("pattern", "")),
+                    link=str(c.get("link", "")),
                 )
                 for c in item["checks"]
             ),
@@ -944,13 +982,13 @@ def _search_path() -> str:
     )
 
 
-def count(
+def findings(
     check: Check, title: str, root: Path, paths: Sequence[str], build: Path
-) -> Counter[str]:
-    """Findings of ``check`` per file of ``paths`` in ``root``."""
+) -> list[Violation]:
+    """The findings of ``check`` in the files ``paths`` of ``root``."""
     present = [path for path in paths if (root / path).is_file()]
     if not present:
-        return Counter()
+        return []
     result = subprocess.run(
         command(check, title, present, build),
         cwd=root,
@@ -963,18 +1001,41 @@ def count(
             f"{title} check {check.tool} failed (exit {result.returncode}):\n"
             + (result.stderr or result.stdout)[-1500:]
         )
-    found: Counter[str] = Counter()
     wanted = set(present)
+    found: list[Violation] = []
     for match in FINDING.finditer(result.stdout):
-        path = Path(match["path"])
-        absolute = path if path.is_absolute() else root / path
-        try:
-            relative = absolute.resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
-            continue
+        relative = _relative(root, match["path"])
         if relative in wanted:
-            found[relative] += 1
+            found += [
+                Violation(relative, int(match["line"]), name, match["message"])
+                for name in _checks(check, match["message"])
+            ]
     return found
+
+
+def _relative(root: Path, path: str) -> str:
+    """``path`` as the checker printed it, relative to ``root``, or ""."""
+    absolute = Path(path) if Path(path).is_absolute() else root / path
+    try:
+        return absolute.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return ""
+
+
+def _checks(check: Check, message: str) -> list[str]:
+    """The check ids of a finding; one finding may name several."""
+    found = re.search(check.pattern, message) if check.pattern else None
+    return found["check"].split(",") if found else [""]
+
+
+def count(
+    check: Check, title: str, root: Path, paths: Sequence[str], build: Path
+) -> Counter[str]:
+    """Findings of ``check`` per file of ``paths`` in ``root``."""
+    found = findings(check, title, root, paths, build)
+    return Counter(
+        v.path for v in {(v.path, v.line, v.message): v for v in found}.values()
+    )
 
 
 def _generated(root: Path) -> set[str]:
@@ -1058,24 +1119,97 @@ def _regressions(
     before: Path,
     paths: list[str],
 ) -> list[str]:
+    """Each file's new findings, with the guidelines their checks map to.
+
+    A finding is new when the base has no finding of the same file, check
+    and message, wherever its line moved.
+    """
     try:
-        after = count(check, activation.title, root, paths, root)
-        earlier = count(check, activation.title, before, paths, root)
+        after = findings(check, activation.title, root, paths, root)
+        earlier = findings(check, activation.title, before, paths, root)
     except ToolMissingError as missing:
         return [str(missing)]
-    follow = (
-        f"follow the {activation.title} guidelines it checks: "
-        + ", ".join(check.guidelines)
-        if check.guidelines
-        else f"follow the {activation.title} guidelines"
-    )
+    language = load().get(activation.language)
     return [
-        f"{path} gains {check.tool} findings "
-        f"({earlier[path]} -> {after[path]}); "
-        f"{follow}."
-        for path in paths
-        if after[path] > earlier[path]
+        _repair(check, root, language, path, fresh, totals)
+        for path, fresh, totals in _new_by_file(paths, after, earlier)
     ]
+
+
+def _new_by_file(
+    paths: Sequence[str],
+    after: Sequence[Violation],
+    earlier: Sequence[Violation],
+) -> list[tuple[str, list[Violation], tuple[int, int]]]:
+    """Per file with new findings: them, and its counts before and after."""
+    base = Counter(v.same for v in earlier)
+    fresh: list[Violation] = []
+    for v in after:  # ponytail: of equal findings, the first are the old ones
+        if base[v.same]:
+            base[v.same] -= 1
+        else:
+            fresh.append(v)
+    found: list[tuple[str, list[Violation], tuple[int, int]]] = []
+    for path in paths:
+        mine = [v for v in fresh if v.path == path]
+        if mine:
+            totals = (_lines(earlier, path), _lines(after, path))
+            found.append((path, mine, totals))
+    return found
+
+
+def _lines(found: Sequence[Violation], path: str) -> int:
+    """The findings of ``path``, a finding naming two checks counted once."""
+    return len({(v.line, v.message) for v in found if v.path == path})
+
+
+def _repair(
+    check: Check,
+    root: Path,
+    language: Language | None,
+    path: str,
+    fresh: Sequence[Violation],
+    totals: tuple[int, int],
+) -> str:
+    """A file's repair message: its new findings, each with its guidelines."""
+    lines = [
+        f"{path} gains {check.tool} findings ({totals[0]} -> {totals[1]}); "
+        "fix each new one and follow the guideline it breaks:"
+    ]
+    for v in fresh[:SHOWN_FINDINGS]:
+        lines.append(f"  {v.path}:{v.line}: {v.message}")
+        lines += [f"    {line}" for line in _rules_of(check, root, language, v)]
+    if len(fresh) > SHOWN_FINDINGS:
+        lines.append(f"  ... and {len(fresh) - SHOWN_FINDINGS} more")
+    return "\n".join(lines)
+
+
+def _rules_of(
+    check: Check, root: Path, language: Language | None, v: Violation
+) -> list[str]:
+    """The index lines of the guidelines ``v``'s check maps to."""
+    mapped = [
+        g
+        for g in (language.guidelines if language else ())
+        if any(matches(e, check.tool, v.check) for e in g.checked_by)
+    ]
+    if not mapped:
+        what = f"{check.tool} {v.check}".strip()
+        return [f"- no guideline maps {what}; see {check.link or check.tool}"]
+    return [_rule_line(g, root) for g in mapped]
+
+
+def _rule_line(g: Guideline, root: Path) -> str:
+    """A guideline's index line: id, rule, enforcement and its leaf."""
+    source, entry = resolved(g)
+    text = g.text or (entry.text if entry else g.key)
+    leaf = (
+        location(root, source, entry.path, here=True)
+        if source and entry
+        else ""
+    )
+    where = f" → {leaf}" if leaf else (f" → {g.link}" if g.link else "")
+    return f"- {g.key}: {text} {sources.enforcement(g.checked_by)}{where}"
 
 
 def changed_files(root: Path, base: str) -> list[str]:
@@ -1336,12 +1470,15 @@ def _example_build(folder: Path, build: Path) -> Path:
 def _example_failures(
     language: Language, g: Guideline, check: Check, folder: Path
 ) -> list[str]:
-    """Whether ``check`` flags ``g``'s bad example and spares its good one."""
+    """Whether ``check`` flags ``g``'s bad example and spares its good one.
+
+    Only findings of the checks ``g`` maps count.
+    """
     try:
         with tempfile.TemporaryDirectory() as scratch:
             build = _example_build(folder, Path(scratch))
             found = {
-                name: count(check, language.title, folder, [path], build)[path]
+                name: _mapped_findings(language, g, check, folder, path, build)
                 for name, path in (("bad", g.bad), ("good", g.good))
                 if path
             }
@@ -1353,6 +1490,22 @@ def _example_failures(
     if g.good and found["good"]:
         failures.append(f"{g.key}: {check.tool} flags {g.good}.")
     return failures
+
+
+def _mapped_findings(
+    language: Language,
+    g: Guideline,
+    check: Check,
+    folder: Path,
+    path: str,
+    build: Path,
+) -> list[Violation]:
+    """The findings in ``path`` whose check ``g`` maps."""
+    return [
+        v
+        for v in findings(check, language.title, folder, [path], build)
+        if any(matches(e, check.tool, v.check) for e in g.checked_by)
+    ]
 
 
 def example_tests(standards: Standards) -> list[str]:

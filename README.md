@@ -154,7 +154,23 @@ priority = 11
 The prompt shows per active guide the lines of its top `index.md` (with its
 license and attribution), and one line per guideline with a `priority` (its
 id, rule, enforcement and leaf); the agent opens the `index.md` below, down
-to a rule's leaf. Other repositories read the trees from
+to a rule's leaf.
+
+On failure, `check-branch` (and auto-se's gate, which runs the same check)
+names each new finding with the guidelines its check maps to:
+
+```text
+a.cpp gains clang-tidy findings (0 -> 1); fix each new one and follow the guideline it breaks:
+  a.cpp:2: warning: returning a newly created resource ... [cppcoreguidelines-owning-memory]
+    - cpp-core-guidelines/R.20: R.20: <the rule's title> [checked by clang-tidy cppcoreguidelines-owning-memory] → .../R/smart/R.20.md
+    - cpp-core-guidelines/I.11: I.11: <the rule's title> [checked by clang-tidy cppcoreguidelines-owning-memory] → .../I/I.11.md
+```
+
+Each checker's `check` pattern in `tools.toml` finds a finding's check id. A
+finding is new when the base has none of the same file, check and message,
+wherever its line moved. A check no guideline maps is shown with the tool's
+documentation, and `show --coverage` lists it when the tool's `list` command
+prints it. Other repositories read the trees from
 their worktree's `.verdog-standards/references/<guide>/`, where
 `engine.copy_references` puts them.
 
