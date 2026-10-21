@@ -3,7 +3,15 @@ name = "verdog-standards"
 version = "0.1.0"
 description = "The coding and documentation standards of verdog-ai, and their checks"
 requires-python = ">=3.12"
-dependencies = ["radon>=6", "ruff>=0.15", "codespell>=2.3", "doc8>=1.1"]
+# The linters of standards.yml that are Python packages, pinned; vale and
+# gitleaks are downloaded by `verdog-standards install`.
+dependencies = [
+    "pyyaml==6.0.3",
+    "ruff==0.17.1",
+    "codespell==2.4.3",
+    "doc8==2.0.0",
+    "clang-tidy==22.1.8",
+]
 
 [project.scripts]
 verdog-standards = "verdog_standards.cli:main"
@@ -14,6 +22,7 @@ dev = [
     "pyright>=1.1.400",
     "coverage>=7",
     "jinja2>=3.1.6",
+    "types-pyyaml>=6",
 ]
 
 [build-system]
@@ -25,4 +34,5 @@ packages = ["src/verdog_standards"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "standards" = "verdog_standards/standards"
-"templates" = "verdog_standards/templates"
+"rules" = "verdog_standards/rules"
+"standards.yml" = "verdog_standards/standards.yml"

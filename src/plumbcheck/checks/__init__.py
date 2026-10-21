@@ -1,1 +1,1 @@
-"""Checkers the instance's ``tools.toml`` run as ``{python} -m``."""
+"""Checkers the LINTERS of ``standards.yml`` run as ``{python} -m``."""

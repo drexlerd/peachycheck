@@ -1,32 +1,27 @@
-"""The engine of the organization's standards: load, select, check, map.
+"""The engine of the organization's standards: load, select, map.
 
 The instance is the folder ``standards/`` of ``verdog-ai/standards``, which the
 user selects and no loop changes; this module only interprets it. Each
 language has a folder ``languages/<language>/`` with ``language.toml`` (title,
-extensions, project marker, test globs), ``overlay.toml`` (what it adds to the
-rules of its guides, and its house rules) and ``tools.toml`` (its checkers).
-``general/`` holds the house rules and tools for every repository,
-``sources.toml`` the guides the guidelines derive from (see ``sources``),
-``metrics.toml`` the code metrics and ``literature.bib`` the literature
-guidelines and metrics may cite.
+extensions, project marker, test globs) and ``overlay.toml`` (what it adds to
+the rules of its guides, and its house rules). ``general/`` holds the house
+rules for every repository and ``tools.toml``, the measurers of
+``metrics.toml``; ``sources.toml`` names the guides the guidelines derive from
+(see ``sources``). The checkers are the ``LINTERS`` of ``standards.yml``, run
+by ``linting``.
 
 A guideline is a rule of a guide, named by its index id
 (``cpp-core-guidelines/R.20``) and curated in the overlay, or a house rule
 (``house/<id>`` in the overlay, ``<language>/<id>`` as its key). The prompt
 shows three levels: each active guide's top sections and the curated rules
-with their leaves; the agent looks up the levels below; and a check's
-repair message names each new finding with its rule and leaf.
+with their leaves; the agent looks up the levels below; and a lint's
+repair message names each finding with its rule and leaf.
 
 A consumer such as auto-se adds what concerns only itself through ``LAYERS``
-(extra ``<kind>.toml`` and ``general/tools.toml`` roots), ``LOOPS``,
-``CATEGORIES`` and ``CHECKS``; it never changes the organization's rules.
-
-Checks allow no new finding: a new file must have none, and a changed file
-may not gain one the base lacks (same file, check and message).
+(extra ``<kind>.toml`` and ``general/tools.toml`` roots), ``LOOPS`` and
+``CHECKS``; it never changes the organization's rules.
 """
 
-import ast
-import contextlib
 import fnmatch
 import functools
 import hashlib
@@ -37,46 +32,34 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import tomllib
-from collections import Counter
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, cast
 
-from verdog_standards import sources
-
-
-def _data(name: str) -> Path:
-    """A data folder: packaged next to this module, or at the repo's root."""
-    packaged = Path(__file__).parent / name
-    return (
-        packaged
-        if packaged.is_dir()
-        else Path(__file__).resolve().parents[2] / name
-    )
-
+from verdog_standards import config, sources
 
 # The instance: everything repositories follow and are judged by.
-STANDARDS: Path = Path(os.environ.get("VERDOG_STANDARDS") or _data("standards"))
-TEMPLATES: Path = _data("templates")
+STANDARDS: Path = Path(
+    os.environ.get("VERDOG_STANDARDS") or config.data("standards")
+)
 # What a consumer adds on top, never changing the rules: roots with extra
-# ``<kind>.toml`` tables and ``general/tools.toml`` tools, its loop names, the
-# names of its literature categories and extra ``check`` errors.
+# ``<kind>.toml`` tables and ``general/tools.toml`` tools, its loop names and
+# extra ``check`` errors.
 LAYERS: list[Path] = []
 LOOPS: list[str] = []
-CATEGORIES: dict[str, str] = {}
 CHECKS: list[Callable[[], list[str]]] = []
 CACHE: Final = Path("~/.cache/verdog-standards")
+BIN: Final = CACHE / "bin"  # the tools ``verdog-standards install`` downloads
 LANGUAGES: Final = "languages"
 GENERAL: Final = "general"
-LITERATURE: Final = "literature.bib"
 MANIFEST_NAME: Final = sources.MANIFEST
 MAIN_BRANCH: str = ""  # empty: the remote's default branch (origin/HEAD)
 GUIDELINE_ID: Final = re.compile(r"[a-z][a-z0-9-]*")
 KINDS: Final = ("coding", "documentation")
-ROLES: Final = ("checker", "retriever", "measurer")
+# The roles of ``tools.toml``; the checkers are the ``LINTERS``.
+ROLES: Final = ("retriever", "measurer")
 # The fields each file allows, with their types.
 LANGUAGE_FIELDS: Final = {
     "title": str,
@@ -89,15 +72,14 @@ LANGUAGE_FIELDS: Final = {
 # repository that has its marker file (Verdog: ``project.json``).
 ACTIVATIONS: Final = ("extension", "marker")
 # The fields of an overlay table. ``checked_by`` names ``tool`` or
-# ``tool:check`` (a glob such as ``ruff:D*``); ``priority`` lists the
-# guideline in the prompt, lowest first; ``see`` points a house rule at a rule
-# of a guide.
+# ``tool:check`` (a glob such as ``ruff:D*``), ``tool`` an alias of a linter;
+# ``priority`` lists the guideline in the prompt, lowest first; ``see``
+# points a house rule at a rule of a guide.
 GUIDELINE_FIELDS: Final = {
     "text": str,
     "kind": str,
     "advisory": bool,
     "link": str,
-    "cite": str,
     "details": str,
     "checked_by": list,
     "judged_by": str,
@@ -112,68 +94,7 @@ SECTION_CHARS: Final = 4000  # of a rule's text, shown on the map
 WORKTREE_REFERENCES: str = (
     ".verdog-standards/references"  # a consumer may move it
 )
-TOOL_FIELDS: Final = {
-    "role": str,
-    "run": str,
-    "install": str,
-    "env": dict,
-    "ok": list,
-    "link": str,
-    "cite": str,
-    "exclude": list,
-    "list": str,
-    "check": str,
-}
-COMPLEXITY_LIMIT: Final = 10  # McCabe's threshold, as the gate's rule
-# A finding of a checker: ``path:line[:column]: ...``, except clang's notes.
-FINDING: Final = re.compile(
-    r"^(?P<path>[^\s:][^:\n]*):(?P<line>\d+)(?::\d+)?: (?!note\b)"
-    r"(?P<message>.*)$",
-    re.M,
-)
-SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
-# Installed dependencies the checkers resolve imports from; the base checkout
-# links the branch's, so both resolve them alike.
-# ponytail: top-level only; add nested ones when a monorepo needs them.
-DEPENDENCIES: Final = ("node_modules",)
-GTS: Final = ("gts@5.3.1", "typescript@5.4.5")
-TOOLS: Final = CACHE / "gts"
-BUILD_DIRECTORIES: list[str] = ["build", "build/standards"]
-
-
-class ToolMissingError(RuntimeError):
-    """A check needs a tool that is not installed."""
-
-
-@dataclass(frozen=True, slots=True)
-class Check:
-    """A checker's command and the guidelines it checks."""
-
-    tool: str
-    run: str
-    install: str = ""
-    env: dict[str, str] = field(default_factory=dict[str, str])
-    ok: tuple[int, ...] = (0, 1)
-    guidelines: tuple[str, ...] = ()
-    exclude: tuple[str, ...] = ()
-    # Finds a finding's check id (group ``check``) in its message.
-    pattern: str = ""
-    link: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class Violation:
-    """One finding of a checker: where, which of its checks, what it says."""
-
-    path: str
-    line: int
-    check: str
-    message: str
-
-    @property
-    def same(self) -> tuple[str, str, str]:
-        """What a finding keeps when lines move: file, check and message."""
-        return (self.path, self.check, self.message)
+TOOL_FIELDS: Final = {"role": str, "link": str}
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +112,6 @@ class Guideline:
     kind: str = "coding"
     advisory: bool = False
     link: str = ""
-    cite: str = ""
     details: str = ""
     checked_by: tuple[str, ...] = ()
     judged_by: str = ""
@@ -228,22 +148,17 @@ class Guideline:
 class Tool:
     """One tool: a checker, a retriever of context or a measurer of metrics.
 
-    A checker counts findings; measurers are declared here and run by their
-    consumer's own code, such as auto-se's gate.
+    A checker is an alias of a linter of ``standards.yml``; measurers are
+    declared in ``tools.toml`` and run by their consumer's own code, such as
+    auto-se's gate.
     """
 
     language: str
     name: str
     role: str = "checker"
-    run: str = ""
-    install: str = ""
-    env: dict[str, str] = field(default_factory=dict[str, str])
-    ok: tuple[int, ...] = (0, 1)
+    linter: str = ""  # the key in ``LINTERS``
     link: str = ""
-    cite: str = ""
-    exclude: tuple[str, ...] = ()
     list: str = ""  # a command printing the checks the checker runs
-    check: str = ""  # finds the check id in a finding's message
     retrieval: dict[str, dict[str, Any]] = field(
         default_factory=dict[str, dict[str, Any]]
     )
@@ -268,26 +183,6 @@ class Language:
     errors: tuple[tuple[str, int, str], ...] = ()
     text: str = ""
 
-    def checkers(self) -> list[Check]:
-        """The language's checkers, each with the guidelines it checks."""
-        return [
-            Check(
-                tool=tool.name,
-                run=tool.run,
-                install=tool.install,
-                env=tool.env,
-                ok=tool.ok,
-                exclude=tool.exclude,
-                pattern=tool.check,
-                link=tool.link,
-                guidelines=tuple(
-                    g.key for g in self.guidelines if tool.name in g.tools
-                ),
-            )
-            for tool in self.tools
-            if tool.role == "checker"
-        ]
-
 
 @dataclass(frozen=True, slots=True)
 class Activation:
@@ -297,14 +192,23 @@ class Activation:
     title: str
     reasons: tuple[str, ...]
     files: tuple[str, ...]
-    cite: tuple[str, ...] = ()
-    checks: tuple[Check, ...] = ()
     guidelines: tuple[dict[str, Any], ...] = ()
     sha256: str = ""
     guides: tuple[dict[str, Any], ...] = ()
 
 
 type Standards = dict[str, Language]
+
+
+def search_path() -> str:
+    """``PATH`` with the engine's environment and the downloaded tools first."""
+    return os.pathsep.join(
+        (
+            str(Path(sys.executable).parent),
+            str(BIN.expanduser()),
+            os.environ.get("PATH", ""),
+        )
+    )
 
 
 def _read(path: Path) -> tuple[dict[str, Any], str]:
@@ -379,47 +283,6 @@ def _key_errors(subject: str, name: str, table: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _tool(
-    language: str, name: str, table: dict[str, Any], where: str, text: str
-) -> Tool:
-    # A retriever's sub-tables are its retrievals; other unknown fields err.
-    plain = {
-        k: v
-        for k, v in table.items()
-        if k in TOOL_FIELDS or not isinstance(v, dict)
-    }
-    errors = _field_errors(plain, TOOL_FIELDS, f"{language}/{name}")
-    role = str(table.get("role", "checker"))
-    errors += _role_errors(f"{language}/{name}", role, bool(table.get("run")))
-    return Tool(
-        language=language,
-        name=name,
-        role=role,
-        run=str(table.get("run", "")),
-        install=str(table.get("install", "")),
-        env={str(k): str(v) for k, v in dict(table.get("env", {})).items()},
-        ok=tuple(int(c) for c in table.get("ok", (0, 1))),
-        link=str(table.get("link", "")),
-        cite=str(table.get("cite", "")),
-        exclude=tuple(str(g) for g in table.get("exclude", ())),
-        list=str(table.get("list", "")),
-        check=str(table.get("check", "")),
-        retrieval={
-            k: dict(v) for k, v in table.items() if k not in TOOL_FIELDS
-        },
-        path=where,
-        line=_line(text, name),
-        errors=tuple(errors),
-    )
-
-
-def _role_errors(key: str, role: str, runs: bool) -> list[str]:
-    errors = [] if role in ROLES else [f"{key}: role must be one of {ROLES}"]
-    if role == "checker" and not runs:
-        errors.append(f"{key}: a checker needs a run command")
-    return errors
-
-
 def _header_errors(
     name: str, header: dict[str, Any], activates: str
 ) -> list[str]:
@@ -435,6 +298,55 @@ def _header_errors(
     if needs_extensions and not header.get("extensions"):
         errors.append(f"{name}: the language needs file extensions")
     return errors
+
+
+def _tool(
+    language: str, name: str, table: dict[str, Any], where: str, text: str
+) -> Tool:
+    """A table of ``tools.toml``; a retriever's sub-tables are its retrievals."""
+    plain = {k: v for k, v in table.items() if not isinstance(v, dict)}
+    errors = _field_errors(plain, TOOL_FIELDS, f"{language}/{name}")
+    role = str(table.get("role", ""))
+    if role not in ROLES:
+        errors.append(
+            f"{language}/{name}: role must be one of {ROLES}; checkers are "
+            "the LINTERS of standards.yml"
+        )
+    return Tool(
+        language=language,
+        name=name,
+        role=role,
+        link=str(table.get("link", "")),
+        retrieval={
+            k: cast(dict[str, Any], v)
+            for k, v in table.items()
+            if isinstance(v, dict)
+        },
+        path=where,
+        line=_line(text, name),
+        errors=tuple(errors),
+    )
+
+
+def checkers(language: str) -> tuple[Tool, ...]:
+    """The aliases of the organization's linters of ``language``."""
+    linters = cast(
+        dict[str, dict[str, Any]],
+        config.resolve(str(config.ORGANIZATION)).get("LINTERS", {}),
+    )
+    return tuple(
+        Tool(
+            language=language,
+            name=alias,
+            linter=key,
+            link=str(spec.get("link", "")),
+            list=str(spec.get("list", "")),
+            path=str(config.ORGANIZATION),
+        )
+        for key, spec in linters.items()
+        if spec.get("language") == language
+        for alias in spec.get("aliases", [key])
+    )
 
 
 def parse(folder: Path, name: str) -> Language:
@@ -457,7 +369,8 @@ def parse(folder: Path, name: str) -> Language:
             _guideline(name, key, dict(table), str(folder / OVERLAY), text)
             for key, table in found.items()
         ),
-        tools=tuple(
+        tools=checkers(name)
+        + tuple(
             _tool(
                 name, key, dict(table), str(folder / "tools.toml"), tools_text
             )
@@ -488,36 +401,6 @@ def declarations(kind: str) -> dict[str, dict[str, Any]]:
         if path.is_file():
             found.update(tomllib.loads(path.read_text()))
     return found
-
-
-def judging(loop: str) -> list[dict[str, Any]]:
-    """The metrics that judge ``loop``'s work, for its prompt.
-
-    A metric judges a loop when the gate uses it (required, objective or
-    documentation), it is measured (not planned) and its ``loops`` name the
-    loop or are empty, which means every loop.
-
-    Args:
-        loop: The loop being prompted.
-
-    Returns:
-        One entry per metric with its ``name``, ``role``, ``better`` and
-        ``definition``, in the order of ``metrics.toml``.
-    """
-    return [
-        {
-            "name": name,
-            "role": m["role"],
-            "better": m["better"],
-            "definition": re.sub(
-                r"\\code\{([^}]*)\}", r"`\1`", m["definition"]
-            ),
-        }
-        for name, m in declarations("metrics").items()
-        if m["role"] in ("required", "objective", "documentation")
-        and m.get("status", "done") == "done"
-        and loop in m.get("loops", (loop,))
-    ]
 
 
 def languages() -> dict[str, dict[str, Any]]:
@@ -779,8 +662,6 @@ def _activation(
         title=language.title,
         reasons=tuple(reasons),
         files=tuple(sorted(changed)),
-        cite=tuple(sorted({g.cite for g in prompted if g.cite})),
-        checks=tuple(language.checkers()),
         guidelines=tuple(_prompted(g, root) for g in prompted),
         sha256=hashlib.sha256(language.text.encode()).hexdigest(),
         guides=tuple(_guide_of(s, root) for s in _guides_of(language)),
@@ -849,7 +730,6 @@ def for_loop(
             "language": a.language,
             "title": a.title,
             "reasons": list(a.reasons),
-            "cite": list(a.cite),
             "guides": [dict(g) for g in a.guides],
             **{
                 kind: [g for g in a.guidelines if g["kind"] == kind]
@@ -861,183 +741,8 @@ def for_loop(
     return [g for g in groups if g["guides"] or any(g[k] for k in KINDS)]
 
 
-def dump(activations: Sequence[Activation]) -> str:
-    """Activations as JSON, for the dossier and the task's audit record."""
-    return json.dumps([asdict(activation) for activation in activations])
-
-
-def undump(record: str) -> list[Activation]:
-    """The activations of ``dump``'s JSON."""
-    items: list[dict[str, Any]] = json.loads(record)
-    return [
-        Activation(
-            language=str(item["language"]),
-            title=str(item["title"]),
-            reasons=tuple(item["reasons"]),
-            files=tuple(item["files"]),
-            cite=tuple(item["cite"]),
-            checks=tuple(
-                Check(
-                    tool=str(c["tool"]),
-                    run=str(c["run"]),
-                    install=str(c["install"]),
-                    env=dict(c["env"]),
-                    ok=tuple(c["ok"]),
-                    guidelines=tuple(c["guidelines"]),
-                    exclude=tuple(c.get("exclude", ())),
-                    pattern=str(c.get("pattern", "")),
-                    link=str(c.get("link", "")),
-                )
-                for c in item["checks"]
-            ),
-            guidelines=tuple(dict(g) for g in item["guidelines"]),
-            sha256=str(item["sha256"]),
-            guides=tuple(dict(g) for g in item.get("guides", ())),
-        )
-        for item in items
-    ]
-
-
-def repository_titles(standards: Standards, root: Path) -> list[str]:
-    """Titles of the languages with a tracked file in ``root``."""
-    listed = subprocess.run(
-        ["git", "-C", str(root), "ls-files"], capture_output=True, text=True
-    )
-    tracked = listed.stdout.split() if not listed.returncode else []
-    found = {language_of(standards, path) for path in tracked} - {""}
-    found |= set(_marked(standards, root))
-    return [standards[key].title for key in sorted(found)]
-
-
-def _gts() -> Path:
-    """Google's ESLint configuration, installed once into the cache."""
-    cache = TOOLS.expanduser()
-    if not (cache / "node_modules" / ".bin" / "eslint").is_file():
-        if shutil.which("npm") is None:
-            raise ToolMissingError(
-                "Google TypeScript style needs npm to install gts."
-            )
-        cache.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["npm", "init", "-y"], cwd=cache, capture_output=True, check=True
-        )
-        subprocess.run(
-            ["npm", "install", "--silent", *GTS],
-            cwd=cache,
-            capture_output=True,
-            check=True,
-        )
-    return cache / "node_modules"
-
-
-def _compile_commands(build: Path) -> str:
-    for directory in BUILD_DIRECTORIES:
-        if (build / directory / "compile_commands.json").is_file():
-            return str(build / directory)
-    raise ToolMissingError(
-        "C++ checks need compile_commands.json from the CMake setup."
-    )
-
-
-def command(
-    check: Check, title: str, paths: Sequence[str], build: Path
-) -> list[str]:
-    """``check.run`` with its placeholders expanded, as an argument list."""
-    tool = shlex.split(check.run)[0]
-    if "{" not in tool and shutil.which(tool, path=_search_path()) is None:
-        hint = f"; install it with {check.install}" if check.install else ""
-        raise ToolMissingError(f"{title} needs {tool}{hint}.")
-    values: dict[str, str] = {
-        "files": shlex.join(paths),
-        "python": sys.executable,
-        "standards": str(STANDARDS),
-    }
-    if "{compile_commands}" in check.run:
-        values["compile_commands"] = _compile_commands(build)
-    if any(f"{{{name}}}" in check.run for name in ("gts", "eslint", "tsc")):
-        modules = _gts()
-        values["gts"] = str(modules / "gts")
-        values["eslint"] = str(modules / ".bin" / "eslint")
-        values["tsc"] = str(modules / ".bin" / "tsc")
-    return shlex.split(check.run.format_map(values))
-
-
-def _search_path() -> str:
-    """``PATH`` with this Python's environment, holding its tools, first."""
-    return os.pathsep.join(
-        (str(Path(sys.executable).parent), os.environ["PATH"])
-    )
-
-
-def findings(
-    check: Check, title: str, root: Path, paths: Sequence[str], build: Path
-) -> list[Violation]:
-    """The findings of ``check`` in the files ``paths`` of ``root``."""
-    present = [path for path in paths if (root / path).is_file()]
-    if not present:
-        return []
-    result = subprocess.run(
-        command(check, title, present, build),
-        cwd=root,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": _search_path(), **check.env},
-    )
-    if result.returncode not in check.ok:
-        raise ToolMissingError(
-            f"{title} check {check.tool} failed (exit {result.returncode}):\n"
-            + (result.stderr or result.stdout)[-1500:]
-        )
-    wanted = set(present)
-    found: list[Violation] = []
-    for match in FINDING.finditer(result.stdout):
-        relative = _relative(root, match["path"])
-        if relative in wanted:
-            message = _portable(root, match["message"])
-            found += [
-                Violation(relative, int(match["line"]), name, message)
-                for name in _checks(check, message)
-            ]
-    return found
-
-
-def _portable(root: Path, message: str) -> str:
-    """``message`` with paths into ``root`` relative to it.
-
-    The base is checked in a temporary checkout, so its findings match the
-    branch's only without the checkout's own path.
-    """
-    for prefix in {f"{root.resolve()}/", f"{root.absolute()}/"}:
-        message = message.replace(prefix, "")
-    return message
-
-
-def _relative(root: Path, path: str) -> str:
-    """``path`` as the checker printed it, relative to ``root``, or ""."""
-    absolute = Path(path) if Path(path).is_absolute() else root / path
-    try:
-        return absolute.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return ""
-
-
-def _checks(check: Check, message: str) -> list[str]:
-    """The check ids of a finding; one finding may name several."""
-    found = re.search(check.pattern, message) if check.pattern else None
-    return found["check"].split(",") if found else [""]
-
-
-def count(
-    check: Check, title: str, root: Path, paths: Sequence[str], build: Path
-) -> Counter[str]:
-    """Findings of ``check`` per file of ``paths`` in ``root``."""
-    found = findings(check, title, root, paths, build)
-    return Counter(
-        v.path for v in {(v.path, v.line, v.message): v for v in found}.values()
-    )
-
-
-def _generated(root: Path) -> set[str]:
+def generated(root: Path) -> set[str]:
+    """The files of a Verdog project that its compiler generates."""
     project_json = root / "project.json"
     if not project_json.is_file():
         return set()
@@ -1055,169 +760,19 @@ def _references(paths: Iterable[str]) -> set[str]:
     }
 
 
-def _authored(root: Path, changed: Iterable[str]) -> set[str]:
-    """The changed files still present that are neither generated nor guides."""
+def authored(root: Path, changed: Iterable[str]) -> set[str]:
+    """The files still present that are neither generated nor guides."""
     present = {p for p in changed if (root / p).is_file()}
-    return present - _generated(root) - _references(present)
+    return present - generated(root) - _references(present)
 
 
-def check_errors(
-    root: Path,
-    base: str,
-    activations: Sequence[Activation],
-    changed: Iterable[str],
-) -> list[str]:
-    """Changed files that gain findings of an active language's checkers.
-
-    ``changed`` are paths relative to ``root``. Generated files of a Verdog
-    project keep the compiler's style; a deleted file gains nothing. A
-    missing tool is an error.
-    """
-    # check: style.google_python
-    # check: style.google_typescript
-    # check: style.cpp_core
-    paths = _authored(root, changed)
-    jobs = [
-        (
-            activation,
-            check,
-            sorted(
-                p
-                for p in paths & set(activation.files)
-                if not any(fnmatch.fnmatch(p, glob) for glob in check.exclude)
-            ),
-        )
-        for activation in activations
-        for check in activation.checks
-    ]
-    jobs = [job for job in jobs if job[2]]
-    if not jobs:
-        return []
-    errors: list[str] = []
-    with _base_checkout(root, base) as before:
-        for activation, check, job_paths in jobs:
-            errors += _regressions(activation, check, root, before, job_paths)
-    return errors
-
-
-@contextlib.contextmanager
-def _base_checkout(root: Path, base: str) -> Generator[Path, None, None]:
-    """A temporary checkout of ``base`` with the branch's dependencies."""
-    with tempfile.TemporaryDirectory() as checkout:
-        subprocess.run(
-            ["git", "worktree", "add", "-q", "--detach", checkout, base],
-            cwd=root,
-            capture_output=True,
-            check=True,
-        )
-        links = [Path(checkout) / name for name in DEPENDENCIES]
-        try:
-            for link in links:
-                if (root / link.name).is_dir() and not link.exists():
-                    link.symlink_to((root / link.name).resolve())
-            yield Path(checkout)
-        finally:
-            for link in links:
-                if link.is_symlink():
-                    link.unlink()  # so removing the checkout spares the target
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", checkout],
-                cwd=root,
-                capture_output=True,
-            )
-
-
-def _regressions(
-    activation: Activation,
-    check: Check,
-    root: Path,
-    before: Path,
-    paths: list[str],
-) -> list[str]:
-    """Each file's new findings, with the guidelines their checks map to.
-
-    A finding is new when the base has no finding of the same file, check
-    and message, wherever its line moved.
-    """
-    try:
-        after = findings(check, activation.title, root, paths, root)
-        earlier = findings(check, activation.title, before, paths, root)
-    except ToolMissingError as missing:
-        return [str(missing)]
-    language = load().get(activation.language)
-    return [
-        _repair(check, root, language, path, fresh, totals)
-        for path, fresh, totals in _new_by_file(paths, after, earlier)
-    ]
-
-
-def _new_by_file(
-    paths: Sequence[str],
-    after: Sequence[Violation],
-    earlier: Sequence[Violation],
-) -> list[tuple[str, list[Violation], tuple[int, int]]]:
-    """Per file with new findings: them, and its counts before and after."""
-    base = Counter(v.same for v in earlier)
-    fresh: list[Violation] = []
-    for v in after:  # ponytail: of equal findings, the first are the old ones
-        if base[v.same]:
-            base[v.same] -= 1
-        else:
-            fresh.append(v)
-    found: list[tuple[str, list[Violation], tuple[int, int]]] = []
-    for path in paths:
-        mine = [v for v in fresh if v.path == path]
-        if mine:
-            totals = (_lines(earlier, path), _lines(after, path))
-            found.append((path, mine, totals))
-    return found
-
-
-def _lines(found: Sequence[Violation], path: str) -> int:
-    """The findings of ``path``, a finding naming two checks counted once."""
-    return len({(v.line, v.message) for v in found if v.path == path})
-
-
-def _repair(
-    check: Check,
-    root: Path,
-    language: Language | None,
-    path: str,
-    fresh: Sequence[Violation],
-    totals: tuple[int, int],
-) -> str:
-    """A file's repair message: its new findings, each with its guidelines."""
-    lines = [
-        f"{path} gains {check.tool} findings ({totals[0]} -> {totals[1]}); "
-        "fix each new one and follow the guideline it breaks:"
-    ]
-    for v in fresh[:SHOWN_FINDINGS]:
-        lines.append(f"  {v.path}:{v.line}: {v.message}")
-        lines += [f"    {line}" for line in _rules_of(check, root, language, v)]
-    if len(fresh) > SHOWN_FINDINGS:
-        lines.append(f"  ... and {len(fresh) - SHOWN_FINDINGS} more")
-    return "\n".join(lines)
-
-
-def _rules_of(
-    check: Check, root: Path, language: Language | None, v: Violation
-) -> list[str]:
-    """The index lines of the guidelines ``v``'s check maps to."""
-    mapped = [
-        g
-        for g in (language.guidelines if language else ())
-        if any(matches(e, check.tool, v.check) for e in g.checked_by)
-    ]
-    if not mapped:
-        what = f"{check.tool} {v.check}".strip()
-        return [f"- no guideline maps {what}; see {check.link or check.tool}"]
-    return [_rule_line(g, root) for g in mapped]
-
-
-def _rule_line(g: Guideline, root: Path) -> str:
+def rule_line(g: Guideline, root: Path) -> str:
     """A guideline's index line: id, rule, enforcement and its leaf."""
     source, entry = resolved(g)
-    text = g.text or (entry.text if entry else g.key)
+    # A cache-only guide's rule text stays out of the (public) output; its
+    # leaf, on this machine, holds it.
+    public = source is not None and source.store == "commit"
+    text = g.text or (entry.text if entry and public else g.key)
     leaf = (
         location(root, source, entry.path, here=True)
         if source and entry
@@ -1227,169 +782,14 @@ def _rule_line(g: Guideline, root: Path) -> str:
     return f"- {g.key}: {text} {sources.enforcement(g.checked_by)}{where}"
 
 
-def changed_files(root: Path, base: str) -> list[str]:
-    """The authored files changed since ``base``, staging untracked ones."""
-    subprocess.run(
-        ["git", "add", "-A"], cwd=root, capture_output=True, check=True
-    )
-    listed = subprocess.run(
-        ["git", "diff", "--cached", "--name-only", base],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return sorted(set(listed.stdout.split()) - _generated(root))
-
-
-def style_errors(root: Path, base: str, changed: Iterable[str]) -> list[str]:
-    """Check ``changed`` against the checkers of their languages."""
-    paths = sorted(set(changed))
-    return check_errors(root, base, select(load(), paths, root, base), paths)
-
-
-def changed_errors(root: Path, base: str) -> list[str]:
-    """Style and complexity errors of the authored files changed since base."""
-    changed = changed_files(root, base)
-    return style_errors(root, base, changed) + complexity_errors(
-        root, base, changed
-    )
-
-
-def _functions(source: str) -> dict[str, tuple[int, str]]:
-    """Complexity and source of each function in ``source``, by its name."""
-    with tempfile.TemporaryDirectory() as folder:
-        path = Path(folder, "module.py")
-        path.write_text(source)
-        found = subprocess.run(
-            [sys.executable, "-m", "radon", "cc", "-j", str(path)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    blocks: list[dict[str, Any]] = json.loads(found.stdout).get(str(path), [])
-    if isinstance(blocks, dict):
-        raise SyntaxError(str(blocks))  # radon reports {"error": ...}
-    shapes = _shapes(ast.parse(source))
-    functions: dict[str, tuple[int, str]] = {}
-    for b in blocks:
-        if b["type"] in ("function", "method"):
-            name = (
-                f"{b['classname']}.{b['name']}"
-                if b.get("classname")
-                else b["name"]
-            )
-            functions[name] = (int(b["complexity"]), shapes.get(name, ""))
-    return functions
-
-
-def _shapes(tree: ast.Module) -> dict[str, str]:
-    """The syntax of each function and method without docstrings, by name.
-
-    Reformatting or documenting a function does not change it.
-    """
-    _normalize(tree)
-    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
-    found: dict[str, str] = {}
-    for node in tree.body:
-        members = node.body if isinstance(node, ast.ClassDef) else []
-        prefix = f"{node.name}." if isinstance(node, ast.ClassDef) else ""
-        for f in [node, *members]:
-            if isinstance(f, functions):
-                found[prefix + f.name if f is not node else f.name] = ast.dump(
-                    f
-                )
-    return found
-
-
-def _normalize(tree: ast.Module) -> None:
-    """Drop docstrings and join split f-string text, in place."""
-    documented = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-    for node in ast.walk(tree):
-        if isinstance(node, documented) and ast.get_docstring(node) is not None:
-            node.body = node.body[1:]
-        if isinstance(node, ast.JoinedStr):
-            node.values = _merged(node.values)
-
-
-def _merged(values: list[ast.expr]) -> list[ast.expr]:
-    """An f-string's parts with adjacent text joined, as one literal has it."""
-    merged: list[ast.expr] = []
-    for value in values:
-        last = merged[-1] if merged else None
-        if isinstance(value, ast.Constant) and isinstance(last, ast.Constant):
-            merged[-1] = ast.Constant(str(last.value) + str(value.value))
-        else:
-            merged.append(value)
-    return merged
-
-
-def complexity_errors(
-    root: Path, base: str, changed: Iterable[str]
-) -> list[str]:
-    """New or changed Python functions above ``COMPLEXITY_LIMIT`` (radon).
-
-    A function counts as changed when its source differs from the base's; an
-    untouched complex function in a changed file is not this change's. Tests
-    are exempt: every assertion counts as a branch.
-    """
-    tests = load()["python"].tests
-    errors: list[str] = []
-    for path in sorted(set(changed) - _references(changed)):
-        is_test = any(fnmatch.fnmatch(path, glob) for glob in tests)
-        if not is_test and path.endswith(".py") and (root / path).is_file():
-            errors += _complex_functions(root, base, path)
-    return errors
-
-
-def _complex_functions(root: Path, base: str, path: str) -> list[str]:
-    earlier = subprocess.run(
-        ["git", "show", f"{base}:{path}"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
-    try:
-        before = _functions(earlier.stdout) if earlier.returncode == 0 else {}
-        after = _functions((root / path).read_text())
-    except SyntaxError:
-        return []  # ponytail: the type checker and tests report broken files
-    return [
-        f"{path}: {name} has cyclomatic complexity {cc} > "
-        f"{COMPLEXITY_LIMIT}; split it into smaller functions."
-        for name, (cc, text) in after.items()
-        if cc > COMPLEXITY_LIMIT and before.get(name, (0, ""))[1] != text
-    ]
-
-
-def literature() -> dict[str, dict[str, str]]:
-    """Title, url and category (``keywords``) of each literature entry."""
-    text = (STANDARDS / LITERATURE).read_text()
-    return {
-        key: dict(
-            re.findall(r"^  (title|url|keywords) = \{(.*)\},?$", body, re.M)
-        )
-        for key, body in re.findall(
-            r"^@\w+\{([^,\s]+),\n(.*?)^\}", text, re.M | re.S
-        )
-    }
-
-
-def citations() -> set[str]:
-    """The keys of ``literature.bib``, the only literature cited."""
-    text = (STANDARDS / LITERATURE).read_text()
-    return set(re.findall(r"^@\w+\{([^,\s]+),", text, re.M))
-
-
 def _guideline_errors(
     language: Language,
     g: Guideline,
-    known: set[str],
     metrics: Mapping[str, Any],
     checkers: set[str],
 ) -> list[str]:
     """What is wrong with guideline ``g`` beyond its fields' types."""
-    found = [*g.errors, *_named_errors(g, known, metrics)]
+    found = [*g.errors, *_named_errors(g, metrics)]
     found += [
         f"{g.key}: {tool!r} is not a checker of {language.id}"
         for tool in g.tools
@@ -1402,13 +802,9 @@ def _guideline_errors(
     return [f for f in found if f] + _missing_files(language, g)
 
 
-def _named_errors(
-    g: Guideline, known: set[str], metrics: Mapping[str, Any]
-) -> list[str]:
-    """A cite key not in the literature, a ``judged_by`` that is no metric."""
+def _named_errors(g: Guideline, metrics: Mapping[str, Any]) -> list[str]:
+    """A ``judged_by`` that is no metric."""
     found: list[str] = []
-    if g.cite and g.cite not in known:
-        found.append(f"{g.key}: unknown cite key {g.cite!r}")
     if g.judged_by and g.judged_by not in metrics:
         found.append(f"{g.key}: {g.judged_by!r} is not a metric")
     return found
@@ -1437,15 +833,12 @@ def _missing_files(language: Language, g: Guideline) -> list[str]:
 def lint(language: Language) -> list[str]:
     """Format errors of one language folder, each naming its file and line."""
     found = list(language.errors)
-    known = citations()
     metrics = declarations("metrics")
     checkers = {t.name for t in language.tools if t.role == "checker"}
     for g in language.guidelines:
         found += [
             (g.path, g.line, error)
-            for error in _guideline_errors(
-                language, g, known, metrics, checkers
-            )
+            for error in _guideline_errors(language, g, metrics, checkers)
         ]
     for tool in language.tools:
         found += [(tool.path, tool.line, error) for error in tool.errors]
@@ -1532,8 +925,8 @@ def _unmapped(language: Language) -> list[str]:
     found: list[str] = []
     for tool in (t for t in language.tools if t.list):
         try:
-            checks = _listed(tool, language.title)
-        except (ToolMissingError, OSError) as missing:
+            checks = _listed(tool)
+        except OSError as missing:
             found.append(f"- {language.id}/{tool.name}: not listed ({missing})")
             continue
         found += [
@@ -1549,14 +942,14 @@ def _unmapped(language: Language) -> list[str]:
     return found
 
 
-def _listed(tool: Tool, title: str) -> list[str]:
+def _listed(tool: Tool) -> list[str]:
     """The checks ``tool.list`` prints, one per line."""
-    listing = Check(tool=tool.name, run=tool.list, env=tool.env)
+    values = {"python": sys.executable, "rules": str(config.RULES)}
     result = subprocess.run(
-        command(listing, title, [], Path.cwd()),
+        shlex.split(tool.list.format_map(values)),
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": _search_path(), **tool.env},
+        env={**os.environ, "PATH": search_path()},
     )
     names = (line.strip() for line in result.stdout.splitlines())
     return sorted({n for n in names if re.fullmatch(r"[\w.-]+", n)})
@@ -1683,9 +1076,6 @@ def _tool_node(graph: Graph, parent: str, tool: Tool) -> None:
         )
         for loop in reached:
             graph.link(graph.shared("loop", loop), tool_id, "retrieves")
-    if tool.cite:
-        source = graph.shared("source", tool.cite, kind="literature")
-        graph.link(tool_id, source, "cites")
 
 
 def _guideline_node(
@@ -1716,9 +1106,6 @@ def _guideline_node(
     for tool in g.tools:
         if f"tool:{language.id}/{tool}" in graph.nodes:
             graph.link(guideline, f"tool:{language.id}/{tool}", "checked_by")
-    if g.cite:
-        cited = graph.shared("source", g.cite, kind="literature")
-        graph.link(guideline, cited, "cites")
 
 
 def _leaf_text(source: sources.Source, entry: sources.Rule) -> str:
@@ -1736,9 +1123,6 @@ def _metric_node(graph: Graph, name: str, metric: dict[str, Any]) -> None:
     # An empty ``loops`` means every loop.
     for loop in metric.get("loops") or loops():
         graph.link(node, graph.shared("loop", loop), "judges")
-    for key in metric.get("cite", ()):
-        source = graph.shared("source", key, kind="literature")
-        graph.link(node, source, "cites")
     for tool in metric.get("measured_by", ()):
         if f"tool:{GENERAL}/{tool}" in graph.nodes:
             graph.link(node, f"tool:{GENERAL}/{tool}", "measured_by")
@@ -1760,12 +1144,6 @@ def graph() -> Graph:
     for name, metric in declarations("metrics").items():
         _metric_node(result, name, metric)
     _judged_by(result)
-    entries = literature()
-    for node in result.nodes.values():
-        entry = entries.get(node.label, {}) if node.type == "source" else None
-        if entry is not None:
-            category = CATEGORIES.get(entry.get("keywords", ""), "")
-            node.data.update(entry, category=category)
     return result
 
 
