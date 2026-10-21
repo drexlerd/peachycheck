@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v plumbcheck >/dev/null 2>&1; then exec plumbcheck hook post-edit; else echo '{\"systemMessage\": \"plumbcheck is not on PATH; its post-edit hook is skipped\"}'; fi"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v plumbcheck >/dev/null 2>&1; then exec plumbcheck hook stop; else echo '{\"systemMessage\": \"plumbcheck is not on PATH; its stop hook is skipped\"}'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
