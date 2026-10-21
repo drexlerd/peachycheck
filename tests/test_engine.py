@@ -492,6 +492,11 @@ def test_types_are_recognised_and_their_base_synced(tmp_path: Path) -> None:
         ".plumbcheck/ruff.toml",
     ]
     assert not (tmp_path / ".plumbcheck/old.toml").exists()
+    # What git ignores there, such as a tool's cache, does not count.
+    _git(tmp_path, "init", "-q")
+    _write(tmp_path / ".plumbcheck/.ruff_cache/.gitignore", "*\n")
+    _write(tmp_path / ".plumbcheck/.ruff_cache/x", "")
+    assert cli.sync(tmp_path, check=True) == []
     # The repository's own configurations inherit the base.
     assert cli.inherit(tmp_path) == ["ruff.toml", "pyrightconfig.json"]
     assert (tmp_path / "ruff.toml").read_text() == cli.INHERIT["ruff.toml"]
