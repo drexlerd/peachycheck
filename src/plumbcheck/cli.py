@@ -6,7 +6,7 @@ commands, and ``FILES`` the tool configurations from ``rules/`` every
 repository of that type shares. ``sync`` writes them, ``sync --check`` fails
 on any difference and ``run`` executes the types' commands, as the shared
 workflow does; ``lint`` runs the linters and ``hook`` answers the agents'
-hooks.
+hooks. ``init`` sets a repository up, ``upgrade`` moves it to another version.
 """
 
 import argparse
@@ -15,6 +15,7 @@ import graphlib
 import importlib.metadata
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,25 @@ from typing import Any, cast
 
 from verdog_standards import config, engine, hooks, linting, sources
 
-ORGANIZATION_URL = "https://raw.githubusercontent.com/verdog-ai/standards/{commit}/standards.yml"
+ORGANIZATION_URL = (
+    "https://raw.githubusercontent.com/verdog-ai/standards/{ref}/standards.yml"
+)
+# The organization's file at any ref, as EXTENDS names it.
+ORGANIZATION_PATTERN = re.compile(
+    re.escape(ORGANIZATION_URL).replace(re.escape("{ref}"), r"[^/\s]+")
+)
+PACKAGE = "verdog-standards"
+WORKFLOW = """name: Standards
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  standards:
+    uses: verdog-ai/standards/.github/workflows/check.yml@main
+"""
 
 
 def project_types(root: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -125,6 +144,26 @@ def _siblings(root: Path) -> int:
     return 0
 
 
+def version() -> str:
+    """The installed version of verdog-standards."""
+    return importlib.metadata.version(PACKAGE)
+
+
+def released() -> bool:
+    """Installed from a built package, not from a git or folder source."""
+    try:
+        found = importlib.metadata.distribution(PACKAGE)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    direct = json.loads(found.read_text("direct_url.json") or "{}")
+    return not {"vcs_info", "dir_info"} & set(direct)
+
+
+def _ref() -> str:
+    """The ref EXTENDS names: the release's tag, else the installed commit."""
+    return f"v{version()}" if released() else _commit()
+
+
 def _commit() -> str:
     """The commit of verdog-standards this engine was installed from."""
     try:
@@ -148,7 +187,7 @@ def sync(root: Path, *, check: bool) -> list[str]:
     """Write the types' configs into ``root``; with ``check``, only compare.
 
     Without ``check``, a missing ``standards.yml`` is written too, extending
-    the organization's file at this engine's commit.
+    the organization's file at this engine's release tag, else its commit.
 
     Returns:
         The files that differ (``check``) or were written.
@@ -167,13 +206,85 @@ def sync(root: Path, *, check: bool) -> list[str]:
                 shutil.copyfile(source, target)
     own = root / config.NAME
     if not check and not own.is_file():
-        url = ORGANIZATION_URL.format(commit=_commit())
+        url = ORGANIZATION_URL.format(ref=_ref())
         own.write_text(
             "# The organization's standards; override keys below.\n"
             f"EXTENDS: {url}\n"
         )
         differing.append(config.NAME)
     return differing
+
+
+def _uv_add(root: Path, requirement: str) -> None:
+    subprocess.run(["uv", "add", "--dev", requirement], cwd=root, check=True)
+
+
+def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
+    """Pin ``verdog-standards==wanted`` in the dev group of ``root``.
+
+    Without ``add``, only an existing pin moves. A Verdog project generates
+    its pyproject.toml, so it gets none.
+
+    Returns:
+        What was done, or "" when ``root`` is no Python project.
+    """
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file() or (root / "project.json").is_file():
+        return ""
+    if wanted is None:
+        return "pyproject.toml: no dev pin, not installed from PyPI" * add
+    requirement = f"{PACKAGE}=={wanted}"
+    groups = tomllib.loads(pyproject.read_text()).get("dependency-groups", {})
+    dev = [d for d in groups.get("dev", []) if isinstance(d, str)]
+    if requirement in dev:
+        return f"pyproject.toml: {requirement} already"
+    if not add and not any(re.match(r"verdog[-_.]standards\b", d) for d in dev):
+        return ""
+    _uv_add(root, requirement)
+    return f"pyproject.toml: {requirement} in the dev dependencies"
+
+
+def init(root: Path) -> int:
+    """Set ``root`` up: standards.yml, the CI workflow, configs, tools, pin."""
+    workflow = root / ".github" / "workflows" / "standards.yml"
+    if workflow.is_file():
+        print(".github/workflows/standards.yml: exists")
+    else:
+        inherit = (root / ".gitmodules").is_file()
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text(WORKFLOW + ("    secrets: inherit\n" * inherit))
+        print(".github/workflows/standards.yml: written")
+    _sync(root, check_only=False)
+    install()
+    pinned = _dev_dependency(root, version() if released() else None, add=True)
+    if pinned:
+        print(pinned)
+    return 0
+
+
+def upgrade(root: Path, to: str | None) -> int:
+    """Move EXTENDS and the dev pin to ``to`` (or the installed version)."""
+    own = root / config.NAME
+    if not own.is_file():
+        print("no standards.yml; run `verdog-standards init` first")
+        return 1
+    wanted = to.removeprefix("v") if to else None
+    if wanted is None and released():
+        wanted = version()
+    url = ORGANIZATION_URL.format(ref=f"v{wanted}" if wanted else _commit())
+    text = own.read_text()
+    moved, count = ORGANIZATION_PATTERN.subn(url, text)
+    if not count:
+        print("standards.yml: extends no verdog-ai/standards file, kept")
+    elif moved == text:
+        print(f"standards.yml: already extends {url}")
+    else:
+        own.write_text(moved)
+        print(f"standards.yml: extends {url}")
+    pinned = _dev_dependency(root, wanted, add=False)
+    if pinned:
+        print(pinned)
+    return _sync(root, check_only=False)
 
 
 def run(root: Path) -> int:
@@ -325,6 +436,9 @@ def parser() -> argparse.ArgumentParser:
     """The command line; a consumer may add arguments before parsing."""
     result = argparse.ArgumentParser(prog="verdog-standards")
     result.add_argument("--root", type=Path, default=Path.cwd())
+    result.add_argument(
+        "--version", action="version", version=f"%(prog)s {version()}"
+    )
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="lint the standards themselves")
     commands.add_parser("install", help="download the pinned linters")
@@ -361,6 +475,13 @@ def parser() -> argparse.ArgumentParser:
     syncing = commands.add_parser("sync", help="write the types' tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
     commands.add_parser("run", help="run the types' commands")
+    commands.add_parser(
+        "init", help="set the repository up: standards.yml, CI, configs"
+    )
+    upgrading = commands.add_parser(
+        "upgrade", help="move standards.yml and the dev pin to a version"
+    )
+    upgrading.add_argument("--to", help="default: the installed version")
     commands.add_parser("siblings", help="the sibling repositories uv needs")
     return result
 
@@ -403,6 +524,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "types": lambda: _types(root),
         "sync": lambda: _sync(root, options.check),
         "run": lambda: run(root),
+        "init": lambda: init(root),
+        "upgrade": lambda: upgrade(root, options.to),
         "siblings": lambda: _siblings(root),
         "show": lambda: _show(root, options),
     }
