@@ -229,7 +229,7 @@ def test_no_package_contains_guides_or_an_organization_s_content(
             )
             or any(
                 text in content.decode(errors="ignore")
-                for text in ("verdog-ai", "CppCoreGuidelines", "isocpp")
+                for text in ("CppCoreGuidelines", "isocpp")
             )
         ]
         assert found == [], dist.name
@@ -238,3 +238,16 @@ def test_no_package_contains_guides_or_an_organization_s_content(
 def test_the_wheel_carries_the_license(dists: list[Path]) -> None:
     names = set(_members(next(d for d in dists if d.suffix == ".whl")))
     assert any(n.endswith(".dist-info/licenses/LICENSE") for n in names)
+
+
+def test_a_generated_pyproject_gets_no_dev_pin(
+    tmp_path: Path, release: list[tuple[Path, str]]
+) -> None:
+    org = Path(__file__).parent / "fixtures" / "org" / config.NAME
+    (tmp_path / config.NAME).write_text(f"EXTENDS: {org}\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (tmp_path / "manifest.json").write_text(
+        '{"sources": [{"path": "pyproject.toml", "ownership": "generated"}]}'
+    )
+    assert cli.init(tmp_path) == 0
+    assert release == []

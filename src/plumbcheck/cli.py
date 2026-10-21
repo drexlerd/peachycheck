@@ -21,7 +21,7 @@ import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Final, cast
 
 from plumbcheck import config, engine, hooks, linting, sources
 from plumbcheck.engine import GENERAL

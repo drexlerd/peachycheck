@@ -1,18 +1,19 @@
 # plumbcheck
 
 One `plumbcheck.yml` per repository runs the native linters (ruff, eslint,
-clang-tidy, vale, doc8, codespell, j2lint, gitleaks), the project's own checks
-(build, tests, type checks) and the hooks that apply them while Claude Code
-or Codex works. Locally, in the agents' hooks and in CI it is the same
-command with the same configuration, so a change that passes one passes all.
+clang-tidy, vale, doc8, codespell, j2lint, gitleaks) and the hooks that
+apply them while Claude Code or Codex works. It only lints: builds, tests and
+type checks stay in the repository's own CI. Locally, in the agents' hooks
+and in CI it is the same command with the same configuration, so a change
+that passes one passes all.
 
 Why: every repository otherwise grows its own mix of pre-commit hooks, CI
 steps and editor settings that drift apart. plumbcheck keeps the shared part
 in one file an organization publishes, and each repository `EXTENDS` it,
 overriding only what it must.
 
-- **No opinions.** plumbcheck only knows how to run and read each linter
-  and project type; every linter runs with its own defaults until an
+- **No opinions.** plumbcheck only knows how to run and read each linter;
+  every linter runs with its own defaults until an
   organization or a repository configures it.
 - **Native linters, native inheritance.** Each linter reads its own
   configuration file. `sync` writes an organization's base configurations
@@ -79,7 +80,8 @@ jobs:
       - uses: drexlerd/plumbcheck@v0.1.0
         # with:
         #   version: 0.1.0                          # see below
-        #   token: ${{ secrets.SUBMODULES_TOKEN }}  # private submodules/siblings
+        #   token: ${{ secrets.SUBMODULES_TOKEN }}  # private submodules
+        #   prepare: npm ci                         # what the linters need
 ```
 
 The reusable workflow does the same in three lines:
@@ -98,14 +100,13 @@ PyPI, anything else is a git ref of this repository. Then it fails when
 
 1. a tool configuration differs from what the configuration shares
    (`sync --check`),
-2. a command of the repository's types fails (`run`),
-3. a linter finds anything in a changed file (`lint --base`), or anywhere on
+2. a linter finds anything in a changed file (`lint --base`), or anywhere on
    a push to the default branch (`lint --all`).
 
-Before the commands it checks out submodules and, for each uv path source
-`../<name>`, the repository `<owner>/<name>` next to it, on the same-named
-branch if it has one (`plumbcheck siblings` lists them), so cross-repository
-changes test together. Private ones need the token. An organization can
+It checks out submodules (private ones need the token) and runs `prepare`,
+if given, before the linters: what they need, such as `npm ci` for ESLint
+or a CMake configure that writes `compile_commands.json` for clang-tidy. It
+builds and tests nothing; that is the repository's own CI. An organization can
 wrap the action in a reusable workflow of its own that pins one plumbcheck
 for all its repositories; a job that runs the action keeps its name, so a
 required status check stays the same.
@@ -113,9 +114,7 @@ required status check stays the same.
 ### Locally
 
 ```sh
-plumbcheck types          # the recognised project types
 plumbcheck sync [--check] # write (or compare) .plumbcheck/, the base configurations
-plumbcheck run            # the types' setup and check commands
 plumbcheck lint [--fix]   # findings in files changed since the merge base
 plumbcheck lint --all     # findings anywhere
 plumbcheck lint FILE...   # findings in these files
@@ -157,16 +156,26 @@ PYTHON_RUFF_ARGUMENTS: [--preview]
 | `PLUMBCHECK_VERSION` | the plumbcheck the CI action installs |
 | `LINTERS` | one entry per linter: language, extensions, command, fix, config, output parser, ... |
 | `VERSIONS` | the downloaded tools, by version, URL and sha256 |
-| `PROJECT_TYPES` | markers, setup and check commands of each project type |
-| `FILES` | per project type (or `general`), the base files `sync` writes into `.plumbcheck/` |
+| `FILES` | under `general` or a marker file, the base files `sync` writes into `.plumbcheck/` |
+| `GENERATED` | the generated files `lint` skips, as a JSON manifest of the repository lists them |
+| `CPP_CLANG_TIDY_COMPILE_COMMANDS` | the repository's `compile_commands.json` (default: `build/plumbcheck/`, then `build/`) |
 | `RULES` | a folder the linters' `list` commands may name as `{rules}` |
 | `GUIDES` | the folder of the organization's guides (optional) |
 
 ### Base and overrides
 
-`FILES` names, per project type or under `general` for every repository,
-the files `sync` writes into the repository's `.plumbcheck/` folder (a
-folder, such as Vale's styles, brings every file below it). The folder is
+`FILES` names the files `sync` writes into the repository's `.plumbcheck/`
+folder: those under `general` for every repository, those under a marker
+file (such as `pyproject.toml` or `package.json`) for each repository that
+has it; a later entry wins, and a folder, such as Vale's styles, brings
+every file below it.
+
+```yaml
+FILES:
+  general: {.vale.ini: rules/.vale.ini}
+  pyproject.toml: {ruff.toml: rules/ruff.toml}
+  CMakeLists.txt: {.clang-tidy: rules/.clang-tidy}
+``` The folder is
 generated and committed, so editors and CI read it offline; `sync --check`
 fails when it differs. A base file is read from `.plumbcheck/`, so its
 paths start there: `"../**/tests/**"` for ruff's per-file ignores,
@@ -197,24 +206,24 @@ without a configuration, it is skipped. Coarse switches stay in
 | `J2LINT` | `.j2`, `.jinja`, `.jinja2` | j2lint |
 | `RST_DOC8`, `SPELL_VALE`, `SPELL_CODESPELL` | `.rst` | doc8, vale, codespell |
 | `TYPESCRIPT_ESLINT` | `.ts`, `.tsx` | the repository's `node_modules/.bin/eslint` |
-| `CPP_CLANG_TIDY` | C++ | clang-tidy on `build/standards/compile_commands.json` |
+| `CPP_CLANG_TIDY` | C++ | clang-tidy on the repository's `compile_commands.json` |
 | `REPOSITORY_GITLEAKS` | every file | gitleaks |
 
-### Project types
+### Generated files and compile commands
 
-| type | markers | commands |
-|---|---|---|
-| python-package | `pyproject.toml`, `uv.lock` | uv sync, ruff check, ruff format, pyright, pytest |
-| typescript | `package.json` | npm ci, `npm run check`, `npm test` |
-| cpp | `CMakeLists.txt` | cmake configure, build, ctest |
+`GENERATED` names a JSON manifest whose entries list generated files, which
+`lint` never checks (and `init` pins no dev dependency into a generated
+`pyproject.toml`):
 
-An organization may add its own types (with `replaces` to supersede one).
-A repository may have several types, such as C++ with Python bindings. A
-type runs after the types its `after` names (`cpp` after `python-package`,
-whose `uv sync` installs native dependencies from wheels). A `standards`
-preset in `CMakePresets.json` or `CMakeUserPresets.json` replaces the plain
-configure, build or test command of its kind; its binary directory stays
-`build/standards` with `CMAKE_EXPORT_COMPILE_COMMANDS=ON`, or `run` fails.
+```yaml
+GENERATED: {file: manifest.json, list: sources, path: path, where: {ownership: generated}}
+```
+
+clang-tidy needs the build's `compile_commands.json`: the first of
+`build/plumbcheck/compile_commands.json` and `build/compile_commands.json`,
+or the path(s) `CPP_CLANG_TIDY_COMPILE_COMMANDS` names. Configure CMake with
+`CMAKE_EXPORT_COMPILE_COMMANDS=ON` (in CI through the action's `prepare`);
+without the file, each C++ file reports that as a problem.
 
 ## Hooks
 
@@ -225,22 +234,20 @@ configure, build or test command of its kind; its binary directory stays
   `plumbcheck hook post-edit` fixes and lints the edited files and feeds the
   findings back to the agent;
 - before the agent stops, `plumbcheck hook stop` lints the files changed
-  since the merge base and runs the types' check commands (not their
-  `setup`); it blocks the stop on a failure, at most twice in a row, then
+  since the merge base (no builds or tests); it blocks the stop on a failure, at most twice in a row, then
   lets the agent stop and shows what remains.
 
 Each edited file counts for its own repository (the nearest folder above it
 with a `plumbcheck.yml`), so a Codex patch that spans repositories is
 judged file by file. The Stop hook checks every repository with changes at
 or below the session's folder (its own, and side-by-side worktrees under a
-parent folder, three levels deep), each with its own lint and commands.
+parent folder, three levels deep), each with its own lint.
 Files of no such repository are left alone, so one install serves the
 whole user. A repository
 whose `.venv` has another version of plumbcheck (its dev pin) answers with
 that version. `PLUMBCHECK_HOOKS=off` turns them off;
 `plumbcheck hooks uninstall [--claude] [--codex]` removes exactly these
-entries. A reinstall also replaces the hooks of plumbcheck's earlier name,
-`verdog-standards`.
+entries.
 
 ## Guides
 

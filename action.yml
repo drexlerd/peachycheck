@@ -7,15 +7,17 @@
 #         - uses: drexlerd/plumbcheck@v0.1.0
 #           with:
 #             token: ${{ secrets.SUBMODULES_TOKEN }}   # optional
+#             prepare: npm ci                          # optional
 #
 # It checks the repository out, installs plumbcheck (the `version` input,
 # else PLUMBCHECK_VERSION of the repository's plumbcheck.yml, else this
-# action's own code), recognises the repository's types, requires the
-# shared tool configurations, runs the types' commands and the linters: on
-# a pull request every finding in a changed file fails, on a push to the
-# default branch every finding.
+# action's own code), requires the shared tool configurations and runs the
+# linters: on a pull request every finding in a changed file fails, on a
+# push to the default branch every finding. It builds and tests nothing;
+# `prepare` runs what a linter needs first, such as `npm ci` for ESLint or a
+# CMake configure for clang-tidy's compile_commands.json.
 name: plumbcheck
-description: Native linters, project checks and shared tool configurations from plumbcheck.yml
+description: Native linters and shared tool configurations from plumbcheck.yml
 branding:
   icon: check-circle
   color: green
@@ -29,8 +31,13 @@ inputs:
     default: ""
   token:
     description: >-
-      Reads private submodules and sibling repositories; default: the
-      workflow's token.
+      Reads private submodules; default: the workflow's token.
+    default: ""
+  prepare:
+    description: >-
+      A shell command run in the repository before the linters, for what
+      they need: `npm ci`, or a CMake configure that writes
+      compile_commands.json. Default: none.
     default: ""
 
 runs:
@@ -54,17 +61,6 @@ runs:
       with:
         python-version: "3.12"
         enable-cache: true
-    # CMake reads the launcher from the environment, for its own builds and
-    # those of Python build backends.
-    - if: hashFiles('CMakeLists.txt') != ''
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: ${{ hashFiles('uv.lock', '**/CMakeLists.txt') }}
-    - if: hashFiles('CMakeLists.txt') != ''
-      shell: bash
-      run: |
-        echo CMAKE_C_COMPILER_LAUNCHER=ccache >> "$GITHUB_ENV"
-        echo CMAKE_CXX_COMPILER_LAUNCHER=ccache >> "$GITHUB_ENV"
     - if: hashFiles('package.json') != '' && hashFiles('.nvmrc') == ''
       uses: actions/setup-node@v4
       with:
@@ -90,37 +86,17 @@ runs:
         uv tool install "$spec"
         plumbcheck --version
         plumbcheck install
-    # Each uv path source `../<name>` with a repository <owner>/<name>, on the
-    # same-named branch if it has one, so cross-repository changes test
-    # together.
-    - name: Check out sibling repositories
-      shell: bash
-      env:
-        TOKEN: ${{ inputs.token || github.token }}
-        BRANCH: ${{ github.head_ref || github.ref_name }}
-        OWNER: ${{ github.repository_owner }}
-        GIT_TERMINAL_PROMPT: "0"
-      run: |
-        auth="url.https://x-access-token:${TOKEN}@github.com/.insteadOf=https://github.com/"
-        for name in $(plumbcheck siblings); do
-          url="https://github.com/${OWNER}/${name}.git"
-          git -c "$auth" ls-remote --exit-code "$url" HEAD > /dev/null 2>&1 || continue
-          branch=()
-          if git -c "$auth" ls-remote --exit-code --heads "$url" "$BRANCH" > /dev/null 2>&1; then
-            branch=(--branch "$BRANCH")
-          fi
-          git -c "$auth" clone --depth 1 "${branch[@]}" "$url" "../$name"
-        done
-    - shell: bash
-      run: plumbcheck types
     - name: Tool configurations are in sync
       shell: bash
       run: plumbcheck sync --check
-    - name: The types' commands
+    - name: Prepare
+      if: inputs.prepare != ''
       shell: bash
-      run: plumbcheck run
-    # Runs even when a command failed, so a reported build failure does not
-    # hide the findings; clang-tidy reads the compile commands `run` wrote.
+      env:
+        PREPARE: ${{ inputs.prepare }}
+        TOKEN: ${{ inputs.token || github.token }}
+      run: eval "$PREPARE"
+    # Runs even when the configurations differ, so both are reported.
     - name: No findings
       if: ${{ !cancelled() }}
       shell: bash

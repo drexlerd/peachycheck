@@ -8,5 +8,11 @@ FILES:
     ruff.toml: rules/ruff.toml
     .clang-tidy: rules/.clang-tidy
     .vale.ini: rules/.vale.ini
-  python-package:
+  pyproject.toml:
     pyrightconfig.json: rules/pyrightconfig.json
+# The files a project manifest lists as generated; lint skips them.
+GENERATED:
+  file: manifest.json
+  list: sources
+  path: path
+  where: {ownership: generated}

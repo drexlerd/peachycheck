@@ -157,18 +157,21 @@ def merged_yaml(base: Path, own: Path) -> Path:
     return path
 
 
+def _candidates(spec: dict[str, Any]) -> list[str]:
+    """The linter's ``requires``: one path or a list of them."""
+    wanted: Any = spec.get("requires") or []
+    return [wanted] if isinstance(wanted, str) else list(map(str, wanted))
+
+
 def required(root: Path, spec: dict[str, Any]) -> Path | None:
     """The first of the linter's ``requires`` files that ``root`` has.
 
     Without ``requires``, ``root`` itself.
     """
-    wanted = spec.get("requires") or []
-    candidates = [wanted] if isinstance(wanted, str) else wanted
+    candidates = _candidates(spec)
     if not candidates:
         return root
-    return next(
-        (root / c for c in candidates if (root / c).exists()), None
-    )
+    return next((root / c for c in candidates if (root / c).exists()), None)
 
 
 def _command(root: Path, spec: dict[str, Any], key: str) -> list[str]:
@@ -364,10 +367,8 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
         if wanted and wanted.get("required") and not _config(root, wanted):
             continue  # ponytail: the tool cannot run without a configuration
         if required(root, spec) is None:
-            wanted = spec["requires"]
-            listed = [wanted] if isinstance(wanted, str) else wanted
             result.problems.append(
-                f"{name} needs {' or '.join(listed)}: "
+                f"{name} needs {' or '.join(_candidates(spec))}: "
                 f"{spec.get('missing', 'missing')}"
             )
             continue

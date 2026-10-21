@@ -15,13 +15,20 @@
 # and overlay.toml, sources.toml, metrics.toml) that `check`, `show` and
 # `index` read and lint reports cite; none by default.
 # RULES: a folder the linters' `list` commands may name as {rules}.
-# FILES: per project type (or `general`, for every repository), the base
-# configurations `sync` writes into the repository's .plumbcheck/ folder,
-# such as `ruff.toml: rules/ruff.toml`; none by default.
+# FILES: the base configurations `sync` writes into the repository's
+# .plumbcheck/ folder, such as `ruff.toml: rules/ruff.toml`: those under
+# `general` for every repository, those under a marker file (such as
+# `pyproject.toml`) for each repository that has it; a later entry wins.
+# None by default.
+# GENERATED: the files lint never checks, listed in a JSON file of the
+# repository: `file`, the `list` of entries in it, each entry's `path` key
+# and the values `where` an entry must have; none by default. For example
+#   GENERATED: {file: manifest.json, list: sources, path: path,
+#               where: {ownership: generated}}
 #
-# plumbcheck holds no opinions: this file only says how to run and read each
-# linter and project type. Every linter runs with its own defaults unless a
-# configuration says otherwise.
+# plumbcheck holds no opinions and runs no builds or tests: this file only
+# says how to run and read each linter. Every linter runs with its own
+# defaults unless a configuration says otherwise.
 
 # One entry per linter. A linter checks the files with its `extensions`, or
 # every file for `language: general`; `language` names the language of the
@@ -35,11 +42,14 @@
 # findings: json-ruff, json-eslint, json-vale, json-gitleaks, json-j2lint or
 # regex:<pattern> (groups path, line, rule, message; `rule` names the rule
 # when the pattern has none). `ok` lists the exit codes that mean "ran";
-# `requires` is a file the linter needs, and `missing` says how to get it.
+# `requires` is a file the linter needs, or a list of them of which the
+# first that exists counts ({requires} in `command` is its folder), and
+# `missing` says how to get it; <LINTER>_<requires_key> (default
+# <LINTER>_REQUIRES) replaces `requires`.
 # `aliases` are the names the guides' `checked_by` use; `list` prints the
 # checks the linter runs, for the coverage report. A linter without
-# `command` is run by the project types' commands; it is listed so guides
-# may name it.
+# `command` runs elsewhere (in the repository's own CI); it is listed so
+# guides may name it.
 LINTERS:
   PYTHON_RUFF:
     language: python
@@ -108,17 +118,20 @@ LINTERS:
     language: typescript
     aliases: [tsc]
     link: https://www.typescriptlang.org/tsconfig/#strict
-    # Checked by the typescript type's `npm run check`.
+    # Run by the repository's own checks, such as `npm run check`.
   CPP_CLANG_TIDY:
     language: cpp
     extensions: [.cpp, .cc, .cxx, .hpp, .hh, .h, .tpp, .ipp]
     aliases: [clang-tidy]
     link: https://clang.llvm.org/extra/clang-tidy/checks/list.html
-    command: clang-tidy -p build/standards --quiet
+    command: clang-tidy -p {requires} --quiet
     config: {file: .clang-tidy, flag: --config-file, merge: yaml}
     output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'
-    requires: build/standards/compile_commands.json
-    missing: configure first (`plumbcheck run` creates it)
+    # CPP_CLANG_TIDY_COMPILE_COMMANDS: the path (or paths) of the
+    # repository's compile_commands.json.
+    requires: [build/plumbcheck/compile_commands.json, build/compile_commands.json]
+    requires_key: COMPILE_COMMANDS
+    missing: configure CMake with CMAKE_EXPORT_COMPILE_COMMANDS=ON
     list: clang-tidy --list-checks
   REPOSITORY_GITLEAKS:
     language: general
@@ -145,43 +158,3 @@ VERSIONS:
     version: 8.30.1
     url: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
     sha256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-
-# The project types: a type applies when all its markers exist and no other
-# found type replaces it; it runs after the types its `after` names. A
-# `standards` preset of a kind in CMakePresets.json or CMakeUserPresets.json
-# replaces the command at that kind's position, counting `setup` first.
-# `setup` commands install or configure; `run` and CI run them before the
-# checks in `commands`, the Stop hook only the checks.
-PROJECT_TYPES:
-  python-package:
-    title: Python package
-    markers: [pyproject.toml, uv.lock]
-    setup: [uv sync --locked --all-groups]
-    commands:
-      - uv run --no-sync ruff check .
-      - uv run --no-sync ruff format --check .
-      - uv run --no-sync pyright
-      - uv run --no-sync pytest
-  typescript:
-    title: TypeScript
-    markers: [package.json]
-    # Every package defines the scripts `check` (format, eslint, tsc) and `test`.
-    setup: [npm ci]
-    commands: [npm run check, npm test]
-  cpp:
-    title: C++
-    markers: [CMakeLists.txt]
-    # Native dependencies may come from Python wheels, so Python syncs first.
-    after: [python-package]
-    setup: [cmake -S . -B build/standards -DCMAKE_EXPORT_COMPILE_COMMANDS=ON]
-    # The Stop hook configures only while build/standards is missing.
-    creates: build/standards
-    commands:
-      - cmake --build build/standards --parallel
-      - ctest --test-dir build/standards --output-on-failure
-    # The configure preset keeps binaryDir build/standards and
-    # CMAKE_EXPORT_COMPILE_COMMANDS=ON.
-    presets:
-      configurePresets: cmake --preset standards
-      buildPresets: cmake --build --preset standards --parallel
-      testPresets: ctest --preset standards --output-on-failure

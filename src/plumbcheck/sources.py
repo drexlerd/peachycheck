@@ -399,7 +399,7 @@ def _gaps(node: Node, known: set[str]) -> list[str]:
 
 
 def _markdown_pages(source: Source, copy: Path) -> tuple[Node, list[str]]:
-    """Markdown pages, such as Verdog's docs: each file's headings."""
+    """Markdown pages, such as a project's docs: each file's headings."""
     levels = source.levels or (1, 2)
     root = Node(source.id, source.title)
     problems: list[str] = []

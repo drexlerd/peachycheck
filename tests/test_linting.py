@@ -140,7 +140,7 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     data = _archive(
         {
             "plumbcheck.yml": "EXTENDS: base.yml\nRULES: rules\nFILES:\n"
-            "  python-package: {ruff.toml: rules/ruff.toml, vale: rules/vale}\n",
+            "  pyproject.toml: {ruff.toml: rules/ruff.toml, vale: rules/vale}\n",
             "base.yml": "GUIDES: guides\n",
             "rules/ruff.toml": "line-length = 70\n",
             "rules/vale/A/B.yml": "extends: existence\n",
@@ -158,7 +158,7 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     snapshot = tmp_path / "home/.cache/plumbcheck/extends/o/org/abc"
     assert loaded["RULES"] == str(snapshot / "rules")
     assert loaded["GUIDES"] == str(snapshot / "guides")
-    assert loaded["FILES"]["python-package"]["ruff.toml"] == str(
+    assert loaded["FILES"]["pyproject.toml"]["ruff.toml"] == str(
         snapshot / "rules/ruff.toml"
     )
     (tmp_path / "pyproject.toml").write_text("")
@@ -261,7 +261,7 @@ def test_changed_files_are_modified_and_new_ones_and_nothing_is_staged(
         {
             "a.py": CLEAN,
             "b.py": CLEAN,
-            "project.json": json.dumps(
+            "manifest.json": json.dumps(
                 {"sources": [{"path": "gen.py", "ownership": "generated"}]}
             ),
         },
@@ -294,7 +294,7 @@ def test_generated_deleted_and_test_files_need_no_docstrings(
     root, _ = _repository(
         tmp_path,
         {
-            "project.json": json.dumps(
+            "manifest.json": json.dumps(
                 {"sources": [{"path": "gen.py", "ownership": "generated"}]}
             )
         },
@@ -365,8 +365,25 @@ def test_a_tool_that_needs_a_configuration_skips_without_one(
 def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
     root, _ = _repository(tmp_path, {"a.cpp": "int f();\n"})
     assert linting.lint(root, ["a.cpp"]).problems == [
-        "CPP_CLANG_TIDY needs build/standards/compile_commands.json: "
-        "configure first (`plumbcheck run` creates it)",
+        "CPP_CLANG_TIDY needs build/plumbcheck/compile_commands.json or "
+        "build/compile_commands.json: configure CMake with "
+        "CMAKE_EXPORT_COMPILE_COMMANDS=ON",
+    ]
+    engine.use(root)
+    spec = config.linters(config.load(root))["CPP_CLANG_TIDY"]
+    _write(root / "build/compile_commands.json", "[]")
+    assert linting._command(root, spec, "command")[:3] == [  # pyright: ignore[reportPrivateUsage]
+        "clang-tidy", "-p", str(root / "build"),
+    ]  # fmt: skip
+    # CPP_CLANG_TIDY_COMPILE_COMMANDS names another one.
+    _write(
+        root / config.NAME,
+        (root / config.NAME).read_text()
+        + "CPP_CLANG_TIDY_COMPILE_COMMANDS: out/compile_commands.json\n",
+    )
+    assert linting.lint(root, ["a.cpp"]).problems == [
+        "CPP_CLANG_TIDY needs out/compile_commands.json: configure CMake "
+        "with CMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
 
 
@@ -628,27 +645,6 @@ def test_hooks_act_only_with_a_plumbcheck_yml_and_not_when_off(
     assert hooks.stop(codex, check) == hooks.Reply(stdout="{}")
 
 
-def test_the_stop_hook_runs_the_checks_but_not_the_setup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, _ = _hooked(tmp_path, {"CMakeLists.txt": "", "package.json": "{}"})
-    lines: list[str] = []
-
-    def record(line: str, **_: object) -> subprocess.CompletedProcess[str]:
-        lines.append(line)
-        return subprocess.CompletedProcess(line, 0, "", "")
-
-    monkeypatch.setattr(hooks.subprocess, "run", record)
-    assert hooks._commands(root) == ""  # pyright: ignore[reportPrivateUsage]
-    types = cli.project_types(root)
-    assert "npm ci" not in lines and types["typescript"]["commands"][0] in lines
-    # Without build/standards, CMake configures first.
-    assert types["cpp"]["setup"][0] in lines
-    (root / "build" / "standards").mkdir(parents=True)
-    assert cli.commands_of(root, "cpp", setup=False) == types["cpp"]["commands"]
-    assert cli.commands_of(root, "cpp")[0] == types["cpp"]["setup"][0]
-
-
 def test_hooks_uninstall_removes_exactly_ours(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -727,37 +723,6 @@ def test_a_failing_hook_reports_without_blocking(
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert hooks.run("stop") == 1
     assert "boom" in capsys.readouterr().err
-
-
-def test_hooks_install_replaces_the_hooks_of_the_earlier_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def old(event: str) -> dict[str, Any]:
-        line = f"/old/verdog-standards hook {event}"
-        return {"hooks": [{"type": "command", "command": line}]}
-
-    other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}
-    hooked = {"PostToolUse": [other, old("post-edit")], "Stop": [old("stop")]}
-    settings = _write(
-        tmp_path / ".claude" / "settings.json", json.dumps({"hooks": hooked})
-    )
-
-    def which(name: str) -> str:
-        return f"/bin/{name}"
-
-    monkeypatch.setattr(hooks.shutil, "which", which)
-    assert "/old/verdog-standards" in hooks.install(
-        tmp_path, claude=True, codex=False
-    )
-    written = json.loads(settings.read_text())["hooks"]
-    commands = [
-        h["command"] for e in written.values() for g in e for h in g["hooks"]
-    ]
-    assert commands == [
-        "x",
-        "/bin/plumbcheck hook post-edit",
-        "/bin/plumbcheck hook stop",
-    ]
 
 
 def test_without_guides_a_finding_names_the_linter_s_documentation(

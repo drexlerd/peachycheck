@@ -4,7 +4,9 @@
 #   jobs:
 #     plumbcheck:
 #       uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0
-#       secrets: inherit   # SUBMODULES_TOKEN for private submodules/siblings
+#       secrets: inherit   # SUBMODULES_TOKEN for private submodules
+#       # with:
+#       #   prepare: npm ci  # what the linters need first
 #
 # It runs the action of this repository (action.yml) at the same release;
 # see there. To keep a required status check's name, or to pin a commit,
@@ -16,6 +18,10 @@ on:
     inputs:
       version:
         description: The plumbcheck to install; see action.yml.
+        type: string
+        default: ""
+      prepare:
+        description: A command the linters need first; see action.yml.
         type: string
         default: ""
     secrets:
@@ -34,4 +40,5 @@ jobs:
       - uses: drexlerd/plumbcheck@v0.1.0
         with:
           version: ${{ inputs.version }}
+          prepare: ${{ inputs.prepare }}
           token: ${{ secrets.SUBMODULES_TOKEN }}
