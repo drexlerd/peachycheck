@@ -397,7 +397,27 @@ def test_the_base_is_the_merge_base_with_origin_main_without_origin_head(
     assert cli.base_of(root) == base
 
 
+def test_a_complex_function_cites_the_function_length_rule(
+    tmp_path: Path,
+) -> None:
+    branches = "".join(
+        f"    if x == {i}:\n        return {i}\n" for i in range(16)
+    )
+    complex_ = f'\n\ndef pick(x: int) -> int:\n    """Pick."""\n{branches}    return -1\n'
+    root, base = _repository(tmp_path, {})
+    _write(root / "a.py", CLEAN + complex_)
+    (error,) = linting.lint_errors(root, base)
+    assert "PYTHON_RUFF:C901" in error
+    assert "google-python/3.18" in error
+
+
 # --- hooks
+
+
+def _hooked(tmp_path: Path, contents: dict[str, str]) -> tuple[Path, str]:
+    """A repository the hooks act in: it extends the organization's file."""
+    own = f"EXTENDS: {config.ORGANIZATION}\n"
+    return _repository(tmp_path, {**contents, config.NAME: own})
 
 
 def test_a_patch_names_its_added_updated_and_moved_files() -> None:
@@ -412,7 +432,7 @@ def test_a_patch_names_its_added_updated_and_moved_files() -> None:
 
 
 def test_post_edit_fixes_and_feeds_the_findings_back(tmp_path: Path) -> None:
-    root, _ = _repository(tmp_path, {"a.py": CLEAN})
+    root, _ = _hooked(tmp_path, {"a.py": CLEAN})
     (root / "a.py").write_text("import os\n" + VIOLATION)
     claude = {
         "cwd": str(root),
@@ -439,7 +459,7 @@ def test_post_edit_fixes_and_feeds_the_findings_back(tmp_path: Path) -> None:
 
 
 def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
-    root, _ = _repository(tmp_path, {})
+    root, _ = _hooked(tmp_path, {})
     problems = ["a.py has 1 findings"]
 
     def check(found: Path) -> list[str]:
@@ -467,6 +487,83 @@ def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
     problems.clear()
     assert hooks.stop(codex, check) == hooks.Reply(stdout="{}")
     assert hooks.stop(claude, check) == hooks.Reply()
+
+
+def test_hooks_act_only_with_a_standards_yml_and_not_when_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "hooked").mkdir()
+    root, _ = _repository(tmp_path / "plain", {"a.py": VIOLATION})
+    hooked, _ = _hooked(tmp_path / "hooked", {"a.py": VIOLATION})
+
+    def check(found: Path) -> list[str]:
+        return ["fails"]
+
+    def payloads(folder: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        edit = {
+            "cwd": str(folder),
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(folder / "a.py")},
+        }
+        return edit, {"cwd": str(folder), "turn_id": "t", "session_id": "s"}
+
+    edit, codex = payloads(root)
+    assert hooks.post_edit(edit) == hooks.Reply()
+    assert hooks.stop(codex, check) == hooks.Reply(stdout="{}")
+    assert hooks.stop({"cwd": str(root)}, check) == hooks.Reply()
+    # The edited file's repository counts, not the session's folder.
+    assert hooks.post_edit({**payloads(hooked)[0], "cwd": str(root)}).code == 2
+    edit, codex = payloads(hooked)
+    assert hooks.stop(codex, check).stdout != "{}"
+    monkeypatch.setenv("VERDOG_STANDARDS_HOOKS", "off")
+    assert hooks.post_edit(edit) == hooks.Reply()
+    assert hooks.stop(codex, check) == hooks.Reply(stdout="{}")
+
+
+def test_the_stop_hook_runs_the_checks_but_not_the_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _hooked(tmp_path, {"CMakeLists.txt": "", "package.json": "{}"})
+    lines: list[str] = []
+
+    def record(line: str, **_: object) -> subprocess.CompletedProcess[str]:
+        lines.append(line)
+        return subprocess.CompletedProcess(line, 0, "", "")
+
+    monkeypatch.setattr(hooks.subprocess, "run", record)
+    assert hooks._commands(root) == ""  # pyright: ignore[reportPrivateUsage]
+    types = cli.project_types(root)
+    assert "npm ci" not in lines and types["typescript"]["commands"][0] in lines
+    # Without build/standards, CMake configures first.
+    assert types["cpp"]["setup"][0] in lines
+    (root / "build" / "standards").mkdir(parents=True)
+    assert cli.commands_of(root, "cpp", setup=False) == types["cpp"]["commands"]
+    assert cli.commands_of(root, "cpp")[0] == types["cpp"]["setup"][0]
+
+
+def test_hooks_uninstall_removes_exactly_ours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}
+    before = {"model": "m", "hooks": {"PostToolUse": [other]}}
+    settings = _write(
+        tmp_path / ".claude" / "settings.json", json.dumps(before)
+    )
+
+    def which(name: str) -> str:
+        return f"/bin/{name}"
+
+    monkeypatch.setattr(hooks.shutil, "which", which)
+    hooks.install(tmp_path, claude=True, codex=True)
+    assert "-" in hooks.install(tmp_path, claude=True, codex=True, remove=True)
+    assert json.loads(settings.read_text()) == before
+    codex = tmp_path / ".codex" / "hooks.json"
+    assert json.loads(codex.read_text()) == {}
+    assert hooks.install(tmp_path, claude=True, codex=True, remove=True) == ""
+    codex.unlink()
+    assert hooks.install(tmp_path, claude=False, codex=True, remove=True) == ""
+    assert not codex.exists()
 
 
 def test_hooks_install_is_idempotent_and_keeps_other_hooks(

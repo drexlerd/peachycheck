@@ -70,19 +70,24 @@ def _presets(root: Path) -> set[str]:
     return kinds
 
 
-def commands_of(root: Path, name: str) -> list[str]:
-    """The commands of type ``name`` in ``root``.
+def commands_of(root: Path, name: str, *, setup: bool = True) -> list[str]:
+    """The commands of type ``name`` in ``root``: its ``setup``, then checks.
 
     A ``standards`` preset of a kind in ``presets`` replaces the command at
-    that kind's position.
+    that kind's position. Without ``setup``, the setup commands are left out,
+    unless the type ``creates`` a path that ``root`` lacks.
     """
     spec = project_types(root)[name]
-    commands = list(spec["commands"])
+    first = list(spec.get("setup", []))
+    commands = first + list(spec["commands"])
     found = _presets(root)
     for i, (kind, line) in enumerate(spec.get("presets", {}).items()):
         if kind in found:
             commands[i] = line
-    return commands
+    creates = spec.get("creates")
+    if setup or (creates and not (root / creates).exists()):
+        return commands
+    return commands[len(first) :]
 
 
 def _uv(pyproject: Path) -> dict[str, Any]:
@@ -273,13 +278,17 @@ def install() -> int:
 
 
 def install_hooks(options: argparse.Namespace) -> int:
-    """Write the user's Claude Code and Codex hooks; print the diff."""
+    """Write or remove the user's Claude Code and Codex hooks; print the diff."""
     both = not options.claude and not options.codex
+    remove = options.action == "uninstall"
     diff = hooks.install(
-        Path.home(), claude=options.claude or both, codex=options.codex or both
+        Path.home(),
+        claude=options.claude or both,
+        codex=options.codex or both,
+        remove=remove,
     )
-    print(diff or "the hooks are installed")
-    if options.codex or both:
+    print(diff or f"the hooks are {'removed' if remove else 'installed'}")
+    if (options.codex or both) and not remove:
         print("Trust the Codex hooks once with /hooks.")
     return 0
 
@@ -314,8 +323,10 @@ def parser() -> argparse.ArgumentParser:
     linted.add_argument("--fix", action="store_true", help="fix first")
     hook = commands.add_parser("hook", help="answer a Claude or Codex hook")
     hook.add_argument("event", choices=["post-edit", "stop"])
-    installing = commands.add_parser("hooks", help="install the agents' hooks")
-    installing.add_argument("action", choices=["install"])
+    installing = commands.add_parser(
+        "hooks", help="install or uninstall the agents' hooks"
+    )
+    installing.add_argument("action", choices=["install", "uninstall"])
     installing.add_argument("--claude", action="store_true")
     installing.add_argument("--codex", action="store_true")
     showing = commands.add_parser("show", help="what applies to files, or all")

@@ -5,10 +5,14 @@ the full check (``lint`` since the merge base, then the project types'
 commands) before the agent finishes, and blocks at most ``ATTEMPTS`` times in
 a row. Both read the hook's JSON on stdin; the CLI is told apart by its
 input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
+
+The hooks act only in repositories with a ``standards.yml``, so they can be
+installed for the whole user; ``VERDOG_STANDARDS_HOOKS=off`` turns them off.
 """
 
 import difflib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -18,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
 
-from verdog_standards import cli, linting
+from verdog_standards import cli, config, linting
 
 ATTEMPTS: Final = 2  # blocked stops in a row before the agent may stop
 EDIT_FINDINGS: Final = 20  # shown after an edit
@@ -42,15 +46,24 @@ def _codex(payload: dict[str, Any]) -> bool:
     return "turn_id" in payload or payload.get("tool_name") == "apply_patch"
 
 
-def _root(payload: dict[str, Any]) -> Path | None:
-    """The repository the session works in, if it is one."""
+def _root(folder: str | Path) -> Path | None:
+    """The repository of ``folder`` if the hooks act there.
+
+    They act in a repository with a ``standards.yml``, unless
+    ``VERDOG_STANDARDS_HOOKS`` is ``off``.
+    """
+    if os.environ.get("VERDOG_STANDARDS_HOOKS") == "off":
+        return None
     found = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        cwd=payload.get("cwd") or ".",
+        cwd=folder,
         capture_output=True,
         text=True,
     )
-    return Path(found.stdout.strip()) if found.returncode == 0 else None
+    if found.returncode:
+        return None
+    root = Path(found.stdout.strip())
+    return root if (root / config.NAME).is_file() else None
 
 
 def edited(payload: dict[str, Any]) -> list[str]:
@@ -78,11 +91,17 @@ def _inside(root: Path, cwd: str, paths: list[str]) -> list[str]:
 
 
 def post_edit(payload: dict[str, Any]) -> Reply:
-    """Fix and lint the edited files; findings go back to the agent."""
-    root = _root(payload)
+    """Fix and lint the edited files; findings go back to the agent.
+
+    The repository is that of the first edited file's folder.
+    """
+    cwd = payload.get("cwd") or "."
+    written = edited(payload)
+    folder = (Path(cwd) / written[0]).parent if written else None
+    root = _root(folder) if folder and folder.is_dir() else None
     if root is None:
         return Reply()
-    paths = _inside(root, payload.get("cwd") or str(root), edited(payload))
+    paths = _inside(root, cwd, written)
     if not paths:
         return Reply()
     messages = linting.report(
@@ -92,9 +111,12 @@ def post_edit(payload: dict[str, Any]) -> Reply:
 
 
 def _commands(root: Path) -> str:
-    """The output of the first project command that fails, or ""."""
+    """The output of the first project check that fails, or "".
+
+    The setup commands (installs, syncs) are left to ``run`` and CI.
+    """
     for name in cli.types_of(root):
-        for line in cli.commands_of(root, name):
+        for line in cli.commands_of(root, name, setup=False):
             done = subprocess.run(
                 line, shell=True, cwd=root, capture_output=True, text=True
             )
@@ -126,7 +148,7 @@ def stop(
     """
     codex = _codex(payload)
     allow = Reply(stdout="{}" if codex else "")
-    root = _root(payload)
+    root = _root(payload.get("cwd") or ".")
     if root is None:
         return allow
     counter = _counter(root, str(payload.get("session_id", "")))
@@ -178,6 +200,17 @@ def run(event: str) -> int:
 MARK: Final = "verdog-standards hook "
 
 
+def _others(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The hook groups of an event that are not ours."""
+    return [
+        group
+        for group in groups
+        if not any(
+            MARK in str(h.get("command", "")) for h in group.get("hooks", [])
+        )
+    ]
+
+
 def _with_hooks(
     settings: dict[str, Any], command: str, edits: str
 ) -> dict[str, Any]:
@@ -189,24 +222,32 @@ def _with_hooks(
     }
     merged = dict(hooks)
     for event, (matcher, line, timeout) in wanted.items():
-        kept = [
-            group
-            for group in hooks.get(event, [])
-            if not any(
-                MARK in str(h.get("command", ""))
-                for h in group.get("hooks", [])
-            )
-        ]
         ours: dict[str, Any] = {"matcher": matcher} if matcher else {}
         ours["hooks"] = [
             {"type": "command", "command": line, "timeout": timeout}
         ]
-        merged[event] = [*kept, ours]
+        merged[event] = [*_others(hooks.get(event, [])), ours]
     return {**settings, "hooks": merged}
 
 
-def install(home: Path, *, claude: bool, codex: bool) -> str:
-    """Write the user's hook configurations; return their diff."""
+def _without_hooks(settings: dict[str, Any]) -> dict[str, Any]:
+    """``settings`` without our hooks; events left empty go too."""
+    hooks = cast(dict[str, list[dict[str, Any]]], settings.get("hooks", {}))
+    kept = {event: _others(groups) for event, groups in hooks.items()}
+    if kept == hooks:
+        return settings
+    kept = {event: groups for event, groups in kept.items() if groups}
+    rest = {key: value for key, value in settings.items() if key != "hooks"}
+    return {**rest, "hooks": kept} if kept else rest
+
+
+def install(
+    home: Path, *, claude: bool, codex: bool, remove: bool = False
+) -> str:
+    """Write the user's hook configurations; return their diff.
+
+    With ``remove``, take exactly our hooks out of them instead.
+    """
     found = shutil.which("verdog-standards")
     command = found or str(Path(sys.executable).with_name("verdog-standards"))
     targets = [
@@ -215,13 +256,18 @@ def install(home: Path, *, claude: bool, codex: bool) -> str:
     ]
     diff: list[str] = []
     for path, edits, wanted in targets:
-        if not wanted:
+        if not wanted or (remove and not path.is_file()):
             continue
         before = path.read_text() if path.is_file() else ""
         settings = cast(dict[str, Any], json.loads(before or "{}"))
-        after = (
-            json.dumps(_with_hooks(settings, command, edits), indent=2) + "\n"
+        changed = (
+            _without_hooks(settings)
+            if remove
+            else _with_hooks(settings, command, edits)
         )
+        if changed == settings:
+            continue  # keep the user's own layout
+        after = json.dumps(changed, indent=2) + "\n"
         diff += difflib.unified_diff(
             before.splitlines(keepends=True),
             after.splitlines(keepends=True),

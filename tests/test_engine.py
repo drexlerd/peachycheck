@@ -570,7 +570,8 @@ def test_cpp_runs_after_the_python_types_sync(
     code, lines = _ran(tmp_path, monkeypatch)
     assert code == 0
     assert lines[0].startswith("uv sync")
-    assert lines[-3:] == cli.project_types()["cpp"]["commands"]
+    cpp = cli.project_types()["cpp"]
+    assert lines[-3:] == cpp["setup"] + cpp["commands"]
 
 
 def test_a_standards_preset_replaces_the_plain_cmake_command(
@@ -632,7 +633,7 @@ def test_coverage_counts_checked_rules_and_names_unmapped_checks(
     assert cli.main(["show", "--coverage"]) == 0
     shown = capsys.readouterr().out
     assert "## Google Python Style Guide (`google-python`, CC-BY-3.0)" in shown
-    assert "| 3 Python Style Rules | 18 | 2 | 16 |" in shown
+    assert "| 3 Python Style Rules | 18 | 3 | 15 |" in shown
     assert "| R: Resource management | 25 | 3 | 22 |" in shown
     assert "- python/lister: Z999 maps to no guideline; see https://x.org" in (
         shown

@@ -136,8 +136,16 @@ and `~/.codex/hooks.json` (it prints the diff; trust Codex's once with
   `hook post-edit` fixes and lints the edited files and feeds the findings
   back to the agent;
 - before the agent stops, `hook stop` lints the files changed since the merge
-  base and runs the types' commands; it blocks the stop on a failure, at most
-  twice in a row, then lets the agent stop and shows what remains.
+  base and runs the types' check commands (not their `setup`: installs, syncs,
+  and the CMake configure once `build/standards` exists); it blocks the stop
+  on a failure, at most twice in a row, then lets the agent stop and shows
+  what remains.
+
+Both act only in a repository whose root has a `standards.yml`, so one
+install serves the whole user; elsewhere they do nothing. Set
+`VERDOG_STANDARDS_HOOKS=off` to turn them off, and run
+`verdog-standards hooks uninstall [--claude] [--codex]` to remove exactly
+these entries again.
 
 ## Guides
 
