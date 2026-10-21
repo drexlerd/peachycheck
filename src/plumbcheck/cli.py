@@ -212,6 +212,7 @@ def sync(root: Path, *, check: bool) -> list[str]:
     wanted = base_files(root)
     found = folder.rglob("*") if folder.is_dir() else iter(list[Path]())
     present = {p.relative_to(folder).as_posix() for p in found if p.is_file()}
+    present -= _ignored(folder, present) if present else set()
     differing = sorted(
         {n for n in present if n not in wanted}
         | {
@@ -229,6 +230,18 @@ def sync(root: Path, *, check: bool) -> list[str]:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(wanted[name], target)
     return [f"{config.BASE}/{n}" for n in differing]
+
+
+def _ignored(folder: Path, names: set[str]) -> set[str]:
+    """The ``names`` in ``folder`` that git ignores, such as a tool's cache."""
+    checked = subprocess.run(
+        ["git", "check-ignore", "--stdin"],
+        cwd=folder,
+        input="\n".join(sorted(names)),
+        capture_output=True,
+        text=True,
+    )
+    return set(checked.stdout.splitlines()) & names
 
 
 # What a repository's own configuration needs to inherit the base; ``init``
