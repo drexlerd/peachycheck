@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Check version matches tag
+        run: |
+          uv run --no-sync python - <<'PYTHON'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if os.environ["GITHUB_REF_NAME"] != f"v{version}":
+              raise SystemExit(f"Tag must match project version {version}")
+          PYTHON
+      - name: Check style, types, and tests
+        run: |
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
+          uv run --no-sync pyright
+          uv run --no-sync pytest
+      - name: Build distributions
+        run: uv build
+      - name: Check installed wheel
+        run: |
+          uv venv /tmp/wheel
+          uv pip install --python /tmp/wheel/bin/python dist/*.whl
+          /tmp/wheel/bin/verdog-standards --version
+          /tmp/wheel/bin/verdog-standards check
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.repository == 'verdog-ai/standards'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/verdog-standards/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY"
+          --title "$TAG" --generate-notes --verify-tag

@@ -8,6 +8,8 @@ input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
 
 The hooks act only in repositories with a ``standards.yml``, so they can be
 installed for the whole user; ``VERDOG_STANDARDS_HOOKS=off`` turns them off.
+A repository whose ``.venv`` has another version of verdog-standards answers
+with that one, so its pin wins over the user's install.
 """
 
 import difflib
@@ -90,18 +92,25 @@ def _inside(root: Path, cwd: str, paths: list[str]) -> list[str]:
     return found
 
 
+def _edit_root(payload: dict[str, Any]) -> Path | None:
+    """The repository of the first edited file's folder, if the hooks act."""
+    written = edited(payload)
+    if not written:
+        return None
+    folder = (Path(payload.get("cwd") or ".") / written[0]).parent
+    return _root(folder) if folder.is_dir() else None
+
+
 def post_edit(payload: dict[str, Any]) -> Reply:
     """Fix and lint the edited files; findings go back to the agent.
 
     The repository is that of the first edited file's folder.
     """
     cwd = payload.get("cwd") or "."
-    written = edited(payload)
-    folder = (Path(cwd) / written[0]).parent if written else None
-    root = _root(folder) if folder and folder.is_dir() else None
+    root = _edit_root(payload)
     if root is None:
         return Reply()
-    paths = _inside(root, cwd, written)
+    paths = _inside(root, cwd, edited(payload))
     if not paths:
         return Reply()
     messages = linting.report(
@@ -191,12 +200,68 @@ def respond(reply: Reply) -> int:
 
 def run(event: str) -> int:
     """Answer one hook ``event`` (``post-edit`` or ``stop``) from stdin."""
-    payload = cast(dict[str, Any], json.loads(sys.stdin.read() or "{}"))
+    text = sys.stdin.read()
+    payload = cast(dict[str, Any], json.loads(text or "{}"))
+    pinned = _pinned_answer(event, payload, text)
+    if pinned is not None:
+        return pinned
     try:
         reply = post_edit(payload) if event == "post-edit" else stop(payload)
     except Exception as error:  # A hook must never crash the agent.
         reply = failed(payload, event, error)
     return respond(reply)
+
+
+def pinned(root: Path) -> Path | None:
+    """The ``verdog-standards`` of ``root``'s ``.venv``, if another version.
+
+    ponytail: reads only ``.venv``; a moved UV_PROJECT_ENVIRONMENT is missed.
+    """
+    command = root / ".venv" / "bin" / "verdog-standards"
+    found = sorted(
+        root.glob(
+            ".venv/lib/python*/site-packages/verdog_standards-*.dist-info"
+        )
+    )
+    if not found or not command.is_file():
+        return None
+    version = found[-1].name.removeprefix("verdog_standards-")
+    return None if version == f"{cli.version()}.dist-info" else command
+
+
+def _pinned_answer(
+    event: str, payload: dict[str, Any], text: str
+) -> int | None:
+    """Answer with the repository's own version; None to answer here.
+
+    Only its answers (0, or 2 to block) count; a crash or anything else falls
+    back to this version.
+    """
+    try:
+        root = (
+            _edit_root(payload)
+            if event == "post-edit"
+            else _root(payload.get("cwd") or ".")
+        )
+        command = pinned(root) if root else None
+        if command is None:
+            return None
+        done = subprocess.run(
+            [str(command), "hook", event],
+            input=text,
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:  # A hook must never crash the agent.
+        return None
+    if done.returncode not in (0, 2):
+        return None
+    return respond(
+        Reply(
+            done.returncode, done.stdout.rstrip("\n"), done.stderr.rstrip("\n")
+        )
+    )
 
 
 def failed(payload: dict[str, Any], event: str, error: Exception) -> Reply:

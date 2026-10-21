@@ -53,7 +53,37 @@ rules let one check build them all:
 
 The uv cache and ccache keep the second run fast.
 
+## Install
+
+```sh
+uv tool install verdog-standards     # or: pipx install verdog-standards
+verdog-standards --version
+verdog-standards hooks install       # lint after each edit and before Claude/Codex stop
+```
+
 ## Use it in a repository
+
+```sh
+verdog-standards init                # once per repository
+verdog-standards upgrade [--to 0.3.0]   # later: move it to another version
+```
+
+`init` sets a repository up and prints what it did; run again, it changes
+nothing:
+
+1. `standards.yml`, extending the organization's file at the installed
+   release's tag (`.../standards/v<version>/standards.yml`), or at the
+   installed commit for a git install;
+2. `.github/workflows/standards.yml`, the CI trigger below (with
+   `secrets: inherit` when the repository has a `.gitmodules`);
+3. the shared tool configurations (`sync`) and the pinned vale and gitleaks
+   (`install`);
+4. for a Python project with a `pyproject.toml` (not a Verdog project),
+   `verdog-standards==<version>` in the `dev` dependency group (`uv add
+   --dev`), when installed from PyPI.
+
+`upgrade` moves `EXTENDS` and an existing dev pin to the installed version
+(or `--to VERSION`) and syncs the configurations again.
 
 ```yaml
 jobs:
@@ -72,7 +102,6 @@ The workflow installs `verdog-standards` and its linters, then fails when
 Locally:
 
 ```sh
-uv tool install "verdog-standards @ git+https://github.com/verdog-ai/standards@main"
 verdog-standards install        # download vale and gitleaks, pinned
 verdog-standards types          # the recognised types
 verdog-standards sync           # write the shared tool configurations
@@ -99,11 +128,11 @@ its checks, and its own loop metrics, retriever and prompts through
 
 ## standards.yml
 
-A repository's `standards.yml` extends the organization's file at a commit
-(`sync` writes it) and overrides keys, as MegaLinter's configuration does:
+A repository's `standards.yml` extends the organization's file at a release
+tag or a commit (`init` and `sync` write it) and overrides keys, as MegaLinter's configuration does:
 
 ```yaml
-EXTENDS: https://raw.githubusercontent.com/verdog-ai/standards/<commit>/standards.yml
+EXTENDS: https://raw.githubusercontent.com/verdog-ai/standards/v0.2.0/standards.yml
 DISABLE_LINTERS: [SPELL_VALE]
 FILTER_REGEX_EXCLUDE: ^vendor/
 PYTHON_RUFF_ARGUMENTS: [--preview]
@@ -142,7 +171,10 @@ and `~/.codex/hooks.json` (it prints the diff; trust Codex's once with
   what remains.
 
 Both act only in a repository whose root has a `standards.yml`, so one
-install serves the whole user; elsewhere they do nothing. Set
+install serves the whole user; elsewhere they do nothing. A repository
+whose `.venv` has another version of verdog-standards (its dev pin) answers
+with that version's `.venv/bin/verdog-standards hook ...`; when it fails, the
+user's own install answers. Set
 `VERDOG_STANDARDS_HOOKS=off` to turn them off, and run
 `verdog-standards hooks uninstall [--claude] [--codex]` to remove exactly
 these entries again.
@@ -222,7 +254,29 @@ rule no guideline maps is shown with the linter's documentation, and
 their worktree's `.verdog-standards/references/<guide>/`, where
 `engine.copy_references` puts them.
 
-## Licenses
+## Release
+
+Set `version` in `pyproject.toml`, merge, then tag the merge commit:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` checks that the tag matches the version, runs
+the checks, builds with `uv build`, publishes to PyPI by trusted publishing
+(environment `pypi`) and creates the GitHub release with the distributions.
+
+Once, before the first release, add a pending publisher on PyPI (Account
+settings, Publishing, "Add a new pending publisher", GitHub): project
+`verdog-standards`, owner `verdog-ai`, repository `standards`, workflow
+`release.yml`, environment `pypi`; and create the environment `pypi` in the
+repository's settings (Environments).
+
+## License
+
+verdog-standards is licensed under the GNU Affero General Public License v3.0
+only (`AGPL-3.0-only`, see `LICENSE`). The bundled third-party content keeps
+its own license, listed below and shipped in the packages.
 
 `standards/` quotes or pins third-party guides; `standards/sources.toml`
 names each with its license and attribution, and every tree carries `LICENSE`
@@ -234,4 +288,6 @@ C++ Core Guidelines allow copies for personal or internal business use only:
 they are pinned by commit and sha256 and fetched, and their tree generated,
 into `~/.cache/verdog-standards/` only, never into this public repository.
 Vale's `Google` style in `rules/vale/` comes from
-[errata-ai/Google](https://github.com/errata-ai/Google) (MIT).
+[errata-ai/Google](https://github.com/errata-ai/Google) (MIT, see its
+`LICENSE`); the `AutoSE` style is our own. `graph.html` loads Cytoscape.js,
+elkjs and cytoscape-elk from a CDN when viewed; none is bundled.
