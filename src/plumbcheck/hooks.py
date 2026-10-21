@@ -1,9 +1,9 @@
 """The Claude Code and Codex hooks: lint while the agent works.
 
-``post-edit`` lints, after fixing, the files an edit touched; ``stop`` runs
-the full check (``lint`` since the merge base, then the project types'
-commands) before the agent finishes, and blocks at most ``ATTEMPTS`` times in
-a row. Both read the hook's JSON on stdin; the CLI is told apart by its
+``post-edit`` lints, after fixing, the files an edit touched; ``stop`` lints
+the files changed since the merge base before the agent finishes, and blocks
+at most ``ATTEMPTS`` times in a row. Builds and tests are left to the
+repository's own CI. Both read the hook's JSON on stdin; the CLI is told apart by its
 input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
 
 Each file counts for its own repository, the nearest folder above it with a
@@ -31,7 +31,6 @@ from plumbcheck import cli, config, linting
 
 ATTEMPTS: Final = 2  # blocked stops in a row before the agent may stop
 EDIT_FINDINGS: Final = 20  # shown after an edit
-OUTPUT_CHARS: Final = 3000  # of a failed command's output
 PATCH_PATH: Final = re.compile(
     r"^\*\*\* (?:Add File|Update File|Move to): (.+)$", re.M
 )
@@ -103,22 +102,6 @@ def post_edit(payload: dict[str, Any]) -> Reply:
     return Reply(2, stderr="\n".join(messages)) if messages else Reply()
 
 
-def _commands(root: Path) -> str:
-    """The output of the first project check that fails, or "".
-
-    The setup commands (installs, syncs) are left to ``run`` and CI.
-    """
-    for name in cli.types_of(root):
-        for line in cli.commands_of(root, name, setup=False):
-            done = subprocess.run(
-                line, shell=True, cwd=root, capture_output=True, text=True
-            )
-            if done.returncode:
-                tail = (done.stdout + done.stderr)[-OUTPUT_CHARS:]
-                return f"{name}: `{line}` failed ({done.returncode}):\n{tail}"
-    return ""
-
-
 COUNTERS: Final = Path("~/.cache/plumbcheck/stop")
 SEARCH_DEPTH: Final = 3  # of the folders below the session's for repositories
 
@@ -165,7 +148,7 @@ def stop(
 
     The check runs in every repository ``roots`` finds. ``check`` returns the
     problems of one; by default the findings since the merge base with the
-    main branch and the first failing command.
+    main branch.
     """
     codex = _codex(payload)
     allow = Reply(stdout="{}" if codex else "")
@@ -186,7 +169,7 @@ def stop(
         counter.unlink(missing_ok=True)
         return allow
     reason = (
-        "plumbcheck's check fails; fix every finding and failure, then "
+        "plumbcheck's lint fails; fix every finding, then "
         "finish:\n" + "\n".join(problems)
     )
     if attempts >= ATTEMPTS:
@@ -201,9 +184,7 @@ def stop(
 
 
 def _problems(root: Path) -> list[str]:
-    found = linting.lint_errors(root, cli.base_of(root))
-    failed = _commands(root)
-    return found + ([failed] if failed else [])
+    return linting.lint_errors(root, cli.base_of(root))
 
 
 def respond(reply: Reply) -> int:
@@ -290,12 +271,10 @@ def failed(payload: dict[str, Any], event: str, error: Exception) -> Reply:
 
 
 MARK: Final = "plumbcheck hook "
-# The marks of earlier names, whose hooks a reinstall replaces too.
-MARKS: Final = (MARK, "verdog-standards hook ")
 
 
 def _ours(hook: dict[str, Any]) -> bool:
-    return any(mark in str(hook.get("command", "")) for mark in MARKS)
+    return MARK in str(hook.get("command", ""))
 
 
 def _others(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
