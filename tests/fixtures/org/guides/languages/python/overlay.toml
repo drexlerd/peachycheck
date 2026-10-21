@@ -17,10 +17,6 @@ priority = 3
 text = "Avoid the bug patterns flake8-bugbear names."
 checked_by = ["ruff:B*"]
 
-["house/jinja-environment"]
-text = "Create every Jinja environment with trim_blocks and lstrip_blocks."
-checked_by = ["jinja-environment"]
-
 ["house/formatting"]
 text = "Format with ruff format."
 checked_by = ["ruff-format"]

@@ -6,8 +6,11 @@ commands) before the agent finishes, and blocks at most ``ATTEMPTS`` times in
 a row. Both read the hook's JSON on stdin; the CLI is told apart by its
 input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
 
-The hooks act only in repositories with a ``plumbcheck.yml``, so they can be
-installed for the whole user; ``PLUMBCHECK_HOOKS=off`` turns them off.
+Each file counts for its own repository, the nearest folder above it with a
+``plumbcheck.yml``: an edit may span repositories, and ``stop`` checks every
+repository with changes at or below the session's folder. Elsewhere the
+hooks do nothing, so they can be installed for the whole user;
+``PLUMBCHECK_HOOKS=off`` turns them off.
 A repository whose ``.venv`` has another version of plumbcheck answers
 with that one, so its pin wins over the user's install.
 """
@@ -48,24 +51,8 @@ def _codex(payload: dict[str, Any]) -> bool:
     return "turn_id" in payload or payload.get("tool_name") == "apply_patch"
 
 
-def _root(folder: str | Path) -> Path | None:
-    """The repository of ``folder`` if the hooks act there.
-
-    They act in a repository with a ``plumbcheck.yml``, unless
-    ``PLUMBCHECK_HOOKS`` is ``off``.
-    """
-    if os.environ.get("PLUMBCHECK_HOOKS") == "off":
-        return None
-    found = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=folder,
-        capture_output=True,
-        text=True,
-    )
-    if found.returncode:
-        return None
-    root = Path(found.stdout.strip())
-    return root if (root / config.NAME).is_file() else None
+def _off() -> bool:
+    return os.environ.get("PLUMBCHECK_HOOKS") == "off"
 
 
 def edited(payload: dict[str, Any]) -> list[str]:
@@ -82,40 +69,37 @@ def edited(payload: dict[str, Any]) -> list[str]:
     return [m.strip() for m in PATCH_PATH.findall(text)]
 
 
-def _inside(root: Path, cwd: str, paths: list[str]) -> list[str]:
-    """``paths`` relative to ``root``; those outside it are dropped."""
-    found: list[str] = []
-    for path in paths:
-        absolute = (Path(cwd) / path).resolve()
-        if absolute.is_relative_to(root.resolve()):
-            found.append(absolute.relative_to(root.resolve()).as_posix())
-    return found
+def _edited_roots(payload: dict[str, Any]) -> dict[Path, list[str]]:
+    """The edited files by their repository; files of none are dropped.
+
+    A Codex patch may span repositories; each file counts for its own.
+    """
+    if _off():
+        return {}
+    cwd = Path(payload.get("cwd") or ".")
+    return config.grouped(cwd / path for path in edited(payload))
 
 
-def _edit_root(payload: dict[str, Any]) -> Path | None:
-    """The repository of the first edited file's folder, if the hooks act."""
-    written = edited(payload)
-    if not written:
-        return None
-    folder = (Path(payload.get("cwd") or ".") / written[0]).parent
-    return _root(folder) if folder.is_dir() else None
+def _shown(root: Path, where: Path, messages: list[str]) -> list[str]:
+    """``messages`` of ``root``, under its path when it is not ``where``."""
+    prefix = os.path.relpath(root, where)
+    if not messages or prefix == ".":
+        return messages
+    return [f"In {prefix}/:", *messages]
 
 
 def post_edit(payload: dict[str, Any]) -> Reply:
     """Fix and lint the edited files; findings go back to the agent.
 
-    The repository is that of the first edited file's folder.
+    Each file is linted with the repository it belongs to.
     """
-    cwd = payload.get("cwd") or "."
-    root = _edit_root(payload)
-    if root is None:
-        return Reply()
-    paths = _inside(root, cwd, edited(payload))
-    if not paths:
-        return Reply()
-    messages = linting.report(
-        root, linting.lint(root, paths, fix=True), EDIT_FINDINGS
-    )
+    where = Path(payload.get("cwd") or ".").resolve()
+    messages: list[str] = []
+    for root, paths in _edited_roots(payload).items():
+        found = linting.lint(root, paths, fix=True)
+        messages += _shown(
+            root, where, linting.report(root, found, EDIT_FINDINGS)
+        )
     return Reply(2, stderr="\n".join(messages)) if messages else Reply()
 
 
@@ -135,16 +119,43 @@ def _commands(root: Path) -> str:
     return ""
 
 
-def _counter(root: Path, session: str) -> Path:
-    found = subprocess.run(
-        ["git", "rev-parse", "--absolute-git-dir"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+COUNTERS: Final = Path("~/.cache/plumbcheck/stop")
+SEARCH_DEPTH: Final = 3  # of the folders below the session's for repositories
+
+
+def _counter(session: str) -> Path:
     name = re.sub(r"[^\w.-]", "_", session or "session")
-    return Path(found.stdout.strip()) / "plumbcheck" / f"stop-{name}"
+    return COUNTERS.expanduser() / name
+
+
+def roots(folder: Path) -> list[Path]:
+    """The repositories the Stop hook checks for a session in ``folder``.
+
+    Its own repository and those below it (side-by-side worktrees under one
+    parent, say), each with a ``plumbcheck.yml`` and changes since its base.
+    """
+    if _off():
+        return []
+    found = {r for r in [config.owner(folder)] if r}
+    for path, folders, files in os.walk(folder):
+        depth = len(Path(path).relative_to(folder).parts)
+        folders[:] = [
+            f
+            for f in folders
+            if depth < SEARCH_DEPTH
+            and not f.startswith(".")
+            and f != "node_modules"
+        ]
+        if config.NAME in files and config.owner(Path(path)) == Path(path):
+            found.add(Path(path))
+    return sorted(r for r in found if _changed(r))
+
+
+def _changed(root: Path) -> bool:
+    try:
+        return bool(linting.changed_files(root, cli.base_of(root)))
+    except subprocess.CalledProcessError:
+        return False
 
 
 def stop(
@@ -152,19 +163,25 @@ def stop(
 ) -> Reply:
     """Block the agent's stop while the check fails, at most ``ATTEMPTS`` times.
 
-    ``check`` returns the problems of a repository; by default the findings
-    since the merge base with the main branch and the first failing command.
+    The check runs in every repository ``roots`` finds. ``check`` returns the
+    problems of one; by default the findings since the merge base with the
+    main branch and the first failing command.
     """
     codex = _codex(payload)
     allow = Reply(stdout="{}" if codex else "")
-    root = _root(payload.get("cwd") or ".")
-    if root is None:
+    where = Path(payload.get("cwd") or ".").resolve()
+    found = roots(where)
+    if not found:
         return allow
-    counter = _counter(root, str(payload.get("session_id", "")))
+    counter = _counter(str(payload.get("session_id", "")))
     attempts = int(counter.read_text()) if counter.is_file() else 0
     if not payload.get("stop_hook_active"):
         attempts = 0  # a new turn
-    problems = (check or _problems)(root)
+    problems = [
+        line
+        for root in found
+        for line in _shown(root, where, (check or _problems)(root))
+    ]
     if not problems:
         counter.unlink(missing_ok=True)
         return allow
@@ -236,11 +253,13 @@ def _pinned_answer(
     back to this version.
     """
     try:
-        root = (
-            _edit_root(payload)
+        found = (
+            list(_edited_roots(payload))
             if event == "post-edit"
-            else _root(payload.get("cwd") or ".")
+            else roots(Path(payload.get("cwd") or ".").resolve())
         )
+        # ponytail: only a single repository answers with its own version
+        root = found[0] if len(found) == 1 else None
         command = pinned(root) if root else None
         if command is None:
             return None

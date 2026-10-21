@@ -1,4 +1,5 @@
-# The sample organization's ruff settings.
+# The sample organization's ruff settings; in .plumbcheck/, so paths start
+# at its parent, the repository.
 line-length = 80
 
 [lint]
@@ -11,5 +12,5 @@ max-complexity = 15
 convention = "google"
 
 [lint.per-file-ignores]
-"**/tests/**" = ["D", "C901"]
-"**/test_*.py" = ["D", "C901"]
+"../**/tests/**" = ["D", "C901"]
+"../**/test_*.py" = ["D", "C901"]

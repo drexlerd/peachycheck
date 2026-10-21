@@ -21,10 +21,12 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from plumbcheck import config, engine, hooks, linting, sources
+from plumbcheck.engine import GENERAL
 
 PACKAGE = "plumbcheck"
 WORKFLOW = """name: plumbcheck
@@ -178,25 +180,89 @@ def _commit() -> str:
     return head.stdout.strip() if head.returncode == 0 else "main"
 
 
-def sync(root: Path, *, check: bool) -> list[str]:
-    """Write the types' configs into ``root``; with ``check``, only compare.
+def base_files(root: Path) -> dict[str, Path]:
+    """What ``.plumbcheck/`` of ``root`` holds: each file, by its path there.
 
-    Returns:
-        The files that differ (``check``) or were written.
+    ``FILES`` names them per type of ``root``, and under ``general`` for
+    every repository; a folder brings every file below it.
     """
     files = cast(dict[str, dict[str, str]], config.load(root).get("FILES", {}))
-    differing: list[str] = []
-    for name in types_of(root):
-        for target_name, source_name in files.get(name, {}).items():
+    wanted: dict[str, Path] = {}
+    for name in [GENERAL, *types_of(root)]:
+        for target, source_name in files.get(name, {}).items():
             source = Path(source_name)
-            target = root / target_name
-            if target.is_file() and filecmp.cmp(source, target, shallow=False):
-                continue
-            differing.append(target_name)
-            if not check:
+            below = sorted(p for p in source.rglob("*") if p.is_file())
+            for path in below if source.is_dir() else [source]:
+                inner = path.relative_to(source) if source.is_dir() else ""
+                wanted[(Path(target) / inner).as_posix()] = path
+    return wanted
+
+
+def sync(root: Path, *, check: bool) -> list[str]:
+    """Write ``.plumbcheck/`` of ``root``; with ``check``, only compare.
+
+    The folder holds the base configurations of the repository's types, as
+    ``base_files`` lists them, and nothing else.
+
+    Returns:
+        The files of ``.plumbcheck/`` that differ (``check``) or were
+        written or removed.
+    """
+    folder = root / config.BASE
+    wanted = base_files(root)
+    found = folder.rglob("*") if folder.is_dir() else iter(list[Path]())
+    present = {p.relative_to(folder).as_posix() for p in found if p.is_file()}
+    differing = sorted(
+        {n for n in present if n not in wanted}
+        | {
+            n
+            for n, source in wanted.items()
+            if n not in present
+            or not filecmp.cmp(source, folder / n, shallow=False)
+        }
+    )
+    if not check:
+        for name in differing:
+            target = folder / name
+            target.unlink(missing_ok=True)
+            if name in wanted:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-    return differing
+                shutil.copyfile(wanted[name], target)
+    return [f"{config.BASE}/{n}" for n in differing]
+
+
+# What a repository's own configuration needs to inherit the base; ``init``
+# writes it when the repository has none.
+INHERIT: Final = {
+    "ruff.toml": f'extend = "{config.BASE}/ruff.toml"\n',
+    "pyrightconfig.json": (
+        f'{{\n  "extends": "{config.BASE}/pyrightconfig.json"\n}}\n'
+    ),
+    "eslint.config.mjs": (
+        f'import base from "./{config.BASE}/eslint.config.mjs";\n\n'
+        "export default [...base];\n"
+    ),
+}
+
+
+def inherit(root: Path) -> list[str]:
+    """Write the repository's own configurations that inherit the base.
+
+    Only for a base file of ``.plumbcheck/`` whose tool can extend another
+    file, and only where the repository has no configuration yet.
+    """
+    pyproject = root / "pyproject.toml"
+    ruff_there = pyproject.is_file() and "[tool.ruff" in pyproject.read_text()
+    written: list[str] = []
+    for name, text in INHERIT.items():
+        own = root / name
+        if not (root / config.BASE / name).is_file() or own.is_file():
+            continue
+        if name == "ruff.toml" and ruff_there:
+            continue
+        own.write_text(text)
+        written.append(name)
+    return written
 
 
 def _uv_add(root: Path, requirement: str) -> None:
@@ -255,14 +321,16 @@ def init(root: Path, extends: str | None = None) -> int:
     if workflow.is_file():
         print(".github/workflows/plumbcheck.yml: exists")
     else:
-        inherit = (root / ".gitmodules").is_file()
+        private = (root / ".gitmodules").is_file()
         workflow.parent.mkdir(parents=True, exist_ok=True)
         token = (
             "        with:\n          token: ${{ secrets.SUBMODULES_TOKEN }}\n"
         )
-        workflow.write_text(WORKFLOW.format(ref=_ref(_pin())) + token * inherit)
+        workflow.write_text(WORKFLOW.format(ref=_ref(_pin())) + token * private)
         print(".github/workflows/plumbcheck.yml: written")
     _sync(root, check_only=False)
+    for name in inherit(root):
+        print(f"{name}: written, extending {config.BASE}/{name}")
     install(root)
     pinned = _dev_dependency(root, version() if released() else None, add=True)
     if pinned:
@@ -404,17 +472,27 @@ def index(names: Sequence[str]) -> int:
 
 
 def lint(root: Path, options: argparse.Namespace) -> int:
-    """Lint the given files, those changed since ``--base``, or ``--all``."""
+    """Lint the given files, those changed since ``--base``, or ``--all``.
+
+    Each file is linted with the repository it belongs to (see
+    ``config.owner``); a file of another repository shows its path from
+    ``root``.
+    """
     if options.all:
-        paths = linting.all_files(root)
+        paths = [root / p for p in linting.all_files(root)]
     elif options.files:
-        paths = [
-            os.path.relpath(Path(f).resolve(), root) for f in options.files
-        ]
+        paths = [Path(f).resolve() for f in options.files]
     else:
-        paths = linting.changed_files(root, options.base or base_of(root))
-    result = linting.lint(root, paths, fix=options.fix)
-    messages = linting.report(root, result, limit=10**9)
+        base = options.base or base_of(root)
+        paths = [root / p for p in linting.changed_files(root, base)]
+    messages: list[str] = []
+    for repo, result in linting.lint_files(paths, fix=options.fix):
+        prefix = os.path.relpath(repo, root)
+        if prefix != ".":
+            result.findings = [
+                replace(f, path=f"{prefix}/{f.path}") for f in result.findings
+            ]
+        messages += linting.report(repo, result, limit=10**9)
     print("\n".join(messages) or f"{len(paths)} files, no findings")
     return 1 if messages else 0
 
@@ -515,7 +593,7 @@ def parser() -> argparse.ArgumentParser:
 
 def _sync(root: Path, check_only: bool) -> int:
     differing = sync(root, check=check_only)
-    verb = "differs from the standards" if check_only else "written"
+    verb = "differs; run `plumbcheck sync`" if check_only else "written"
     print("\n".join(f"{path}: {verb}" for path in differing) or "in sync")
     return 1 if differing and check_only else 0
 

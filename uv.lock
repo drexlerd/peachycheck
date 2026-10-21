@@ -172,6 +172,19 @@ wheels = [
 ]
 
 [[package]]
+name = "j2lint"
+version = "1.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/56/9d/b92e24a651013e8862ca6d3571d4f63bc98b870d40c965434735ff04eb35/j2lint-1.3.0.tar.gz", hash = "sha256:d6dd95fd4045efc71b1586a321163ae5988b6b0724ca51a1e2e7eeefa8cc9638", size = 34334, upload-time = "2026-07-30T12:24:01.445Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/be/4532ef928bf8df39813e38395598d24a1b0d276750156819d719a2e972e1/j2lint-1.3.0-py3-none-any.whl", hash = "sha256:fe552eb1184083f28acc72cf070c57caa7db67029f4869b4e096a9f4e253649f", size = 35721, upload-time = "2026-07-30T12:24:00.106Z" },
+]
+
+[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -181,6 +194,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d", size = 245115, upload-time = "2025-03-05T20:05:02.478Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl", hash = "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67", size = 134899, upload-time = "2025-03-05T20:05:00.369Z" },
+]
+
+[[package]]
+name = "markdown-it-py"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mdurl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/ff/7841249c247aa650a76b9ee4bbaeae59370dc8bfd2f6c01f3630c35eb134/markdown_it_py-4.2.0.tar.gz", hash = "sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49", size = 82454, upload-time = "2026-05-07T12:08:28.36Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl", hash = "sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a", size = 91687, upload-time = "2026-05-07T12:08:27.182Z" },
 ]
 
 [[package]]
@@ -297,6 +322,15 @@ wheels = [
 ]
 
 [[package]]
+name = "mdurl"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
 name = "nodeenv"
 version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -331,6 +365,7 @@ dependencies = [
     { name = "clang-tidy" },
     { name = "codespell" },
     { name = "doc8" },
+    { name = "j2lint" },
     { name = "pyyaml" },
     { name = "ruff" },
 ]
@@ -338,7 +373,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
-    { name = "jinja2" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "types-pyyaml" },
@@ -349,6 +383,7 @@ requires-dist = [
     { name = "clang-tidy", specifier = "==22.1.8" },
     { name = "codespell", specifier = "==2.4.3" },
     { name = "doc8", specifier = "==2.0.0" },
+    { name = "j2lint", specifier = "==1.3.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "ruff", specifier = "==0.17.1" },
 ]
@@ -356,7 +391,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7" },
-    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8" },
     { name = "types-pyyaml", specifier = ">=6" },
@@ -456,6 +490,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/e6/eefcad2228f4124f17e01064428fbcd0ade06a274f3063ce3a126a569d6b/restructuredtext_lint-2.0.2.tar.gz", hash = "sha256:dd25209b9e0b726929d8306339faf723734a3137db382bcf27294fa18a6bc52b", size = 17494, upload-time = "2025-11-23T08:05:18.585Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/af/63/ac52b32b33ae62f2076ed5c4f6b00e065e3ccbb2063e9a2e813b2bfc95bf/restructuredtext_lint-2.0.2-py3-none-any.whl", hash = "sha256:374c0d3e7e0867b2335146a145343ac619400623716b211b9a010c94426bbed7", size = 14198, upload-time = "2025-11-23T08:05:23.267Z" },
+]
+
+[[package]]
+name = "rich"
+version = "15.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown-it-py" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl", hash = "sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb", size = 310654, upload-time = "2026-04-12T08:24:02.83Z" },
 ]
 
 [[package]]

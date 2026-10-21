@@ -462,32 +462,45 @@ COMPLEX = (
 )
 
 
-def test_types_are_recognised_and_their_configs_synced(
-    tmp_path: Path,
-) -> None:
+def test_types_are_recognised_and_their_base_synced(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("")
     assert cli.types_of(tmp_path) == []
     (tmp_path / "uv.lock").write_text("")
     assert cli.types_of(tmp_path) == ["python-package"]
-    # Without a plumbcheck.yml, the defaults' ruff.toml.
-    assert cli.sync(tmp_path, check=True) == ["ruff.toml"]
-    assert cli.sync(tmp_path, check=False) == ["ruff.toml"]
-    defaults = config.DEFAULT_RULES / "ruff.toml"
-    assert (tmp_path / "ruff.toml").read_text() == defaults.read_text()
-    # The organization's file overrides it; its path resolves against it.
-    _write(tmp_path / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
-    assert cli.sync(tmp_path, check=True) == ["ruff.toml"]
-    assert cli.sync(tmp_path, check=False) == ["ruff.toml"]
+    # Without a plumbcheck.yml, no base: plumbcheck has no opinions.
     assert cli.sync(tmp_path, check=True) == []
-    assert (tmp_path / "ruff.toml").read_text() == (
+    # The organization's base lands in .plumbcheck/: general and per type.
+    _write(tmp_path / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
+    written = [
+        ".plumbcheck/.clang-tidy",
+        ".plumbcheck/.vale.ini",
+        ".plumbcheck/pyrightconfig.json",
+        ".plumbcheck/ruff.toml",
+    ]
+    assert cli.sync(tmp_path, check=True) == written
+    assert cli.sync(tmp_path, check=False) == written
+    assert cli.sync(tmp_path, check=True) == []
+    assert (tmp_path / ".plumbcheck/ruff.toml").read_text() == (
         (ORG / "rules" / "ruff.toml").read_text()
     )
-    (tmp_path / "ruff.toml").write_text("line-length = 120\n")
+    # Only the folder counts: a stale or changed file differs.
+    (tmp_path / ".plumbcheck/old.toml").write_text("")
+    (tmp_path / ".plumbcheck/ruff.toml").write_text("line-length = 120\n")
     assert cli.main(["--root", str(tmp_path), "sync", "--check"]) == 1
-    # A Verdog project generates its pyproject.toml: no plain package.
+    assert cli.sync(tmp_path, check=False) == [
+        ".plumbcheck/old.toml",
+        ".plumbcheck/ruff.toml",
+    ]
+    assert not (tmp_path / ".plumbcheck/old.toml").exists()
+    # The repository's own configurations inherit the base.
+    assert cli.inherit(tmp_path) == ["ruff.toml", "pyrightconfig.json"]
+    assert (tmp_path / "ruff.toml").read_text() == cli.INHERIT["ruff.toml"]
+    assert cli.inherit(tmp_path) == []
+    assert cli.sync(tmp_path, check=True) == []
+    # plumbcheck knows no Verdog project; an organization may add the type.
     (tmp_path / "project.json").write_text("{}")
     (tmp_path / "CMakeLists.txt").write_text("")
-    assert cli.types_of(tmp_path) == ["verdog-project", "cpp"]
+    assert cli.types_of(tmp_path) == ["python-package", "cpp"]
 
 
 CACHED = (

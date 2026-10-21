@@ -17,12 +17,15 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, cast
+
+import yaml
 
 from plumbcheck import config, engine
 
@@ -109,13 +112,58 @@ def _selected(
     ]
 
 
+def _config(root: Path, wanted: dict[str, Any]) -> Path | None:
+    """The configuration file a linter gets in ``root``, if any.
+
+    With ``merge: yaml``, the repository's own file is laid over the base
+    in ``.plumbcheck/``: a written copy holds both.
+    """
+    chosen = config.rule_file(root, wanted["file"])
+    base = root / config.BASE / wanted["file"]
+    own = root / wanted["file"]
+    if wanted.get("merge") == "yaml" and own.is_file() and base.is_file():
+        return merged_yaml(base, own)
+    return chosen
+
+
+def merged_yaml(base: Path, own: Path) -> Path:
+    """``own`` over ``base``, as clang-tidy reads them, in a temporary file.
+
+    ``Checks`` lists join (later globs win), ``CheckOptions`` merge by key,
+    and any other key of ``own`` replaces the base's.
+    """
+    found = [
+        cast(dict[str, Any], yaml.safe_load(p.read_text()) or {})
+        for p in (base, own)
+    ]
+    result = {**found[0], **found[1]}
+    checks = [str(f["Checks"]) for f in found if f.get("Checks")]
+    if checks:
+        result["Checks"] = ",".join(checks)
+    options: dict[str, Any] = {}
+    for f in found:
+        given: Any = f.get("CheckOptions") or {}
+        if isinstance(given, list):  # the older form: [{key:, value:}]
+            pairs = cast(list[dict[str, Any]], given)
+            given = {o["key"]: o["value"] for o in pairs}
+        options.update(cast(dict[str, Any], given))
+    if options:
+        result["CheckOptions"] = options
+    text = yaml.safe_dump(result, sort_keys=False)
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    path = Path(tempfile.gettempdir()) / "plumbcheck" / f"{digest}-{own.name}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
 def _command(root: Path, spec: dict[str, Any], key: str) -> list[str]:
     """The linter's command ``key`` (``command`` or ``fix``) as arguments."""
     found = engine.configuration()
-    values = {"python": sys.executable, "rules": str(config.rules(found))}
+    values = {"python": sys.executable, "rules": config.rules(found)}
     line = shlex.split(str(spec[key]).format_map(values))
     wanted = spec.get("config")
-    chosen = config.rule_file(root, found, wanted["file"]) if wanted else None
+    chosen = _config(root, wanted) if wanted else None
     if wanted and chosen:
         line += [wanted["flag"], str(chosen)]
     return line + [str(a) for a in spec["arguments"]]
@@ -169,6 +217,15 @@ def _vale(text: str) -> list[Raw]:
     ]
 
 
+def _j2lint(text: str) -> list[Raw]:
+    found = cast(dict[str, list[dict[str, Any]]], json.loads(text or "{}"))
+    return [
+        (e["filename"], int(e["line_number"]), e["id"], e["message"])
+        for kind in ("ERRORS", "WARNINGS")
+        for e in found.get(kind, [])
+    ]
+
+
 def _gitleaks(text: str) -> list[Raw]:
     leaks = cast(list[dict[str, Any]], json.loads(text or "[]"))
     return [
@@ -182,6 +239,7 @@ PARSERS: Final[dict[str, Callable[[str], list[Raw]]]] = {
     "json-eslint": _eslint,
     "json-vale": _vale,
     "json-gitleaks": _gitleaks,
+    "json-j2lint": _j2lint,
 }
 
 
@@ -279,6 +337,9 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
         selected = _selected(spec, present, standards)
         if not selected:
             continue
+        wanted = spec.get("config")
+        if wanted and wanted.get("required") and not _config(root, wanted):
+            continue  # ponytail: the tool cannot run without a configuration
         if spec.get("requires") and not (root / spec["requires"]).exists():
             result.problems.append(
                 f"{name} needs {spec['requires']}: {spec.get('missing', 'missing')}"
@@ -362,6 +423,20 @@ def report(
     ]
 
 
+def lint_files(
+    paths: Sequence[Path], *, fix: bool = False
+) -> list[tuple[Path, Result]]:
+    """Lint absolute ``paths``, each with the repository it belongs to.
+
+    A file belongs to the nearest folder above it with a plumbcheck.yml (see
+    ``config.owner``); files of no such repository are skipped.
+    """
+    return [
+        (root, lint(root, found, fix=fix))
+        for root, found in config.grouped(paths).items()
+    ]
+
+
 def lint_errors(root: Path, base: str) -> list[str]:
     """The repair messages of the files changed since ``base``; [] if clean."""
     return report(root, lint(root, changed_files(root, base)))
@@ -390,7 +465,7 @@ def install(versions: dict[str, dict[str, str]]) -> list[str]:
         (folder / name).chmod(0o755)
         stamp.touch()
         done.append(f"{name} {pin['version']}: downloaded")
-    for tool in ("ruff", "codespell", "doc8", "clang-tidy"):
+    for tool in ("ruff", "codespell", "doc8", "clang-tidy", "j2lint"):
         where = shutil.which(tool, path=search_path())
         done.append(f"{tool}: {where or 'missing; reinstall plumbcheck'}")
     return done

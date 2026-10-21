@@ -1,6 +1,4 @@
-# plumbcheck's own configuration: its own, stricter ruff.toml, and the
-# fixtures, which are sample repositories and guides, not its code.
-FILES:
-  python-package:
-    ruff.toml: ruff.toml
+# plumbcheck's own configuration: no base; its ruff.toml and
+# pyrightconfig.json stand alone. The fixtures are sample repositories and
+# guides, not its code.
 FILTER_REGEX_EXCLUDE: ^tests/fixtures/

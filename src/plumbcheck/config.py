@@ -15,6 +15,7 @@ from a snapshot of its repository at that ref, so its folders resolve too.
 import hashlib
 import io
 import re
+import subprocess
 import tarfile
 import urllib.request
 from collections.abc import Iterable
@@ -27,7 +28,8 @@ NAME: Final = "plumbcheck.yml"
 APPEND: Final = "CONFIG_PROPERTIES_TO_APPEND"
 CACHE: Final = Path("~/.cache/plumbcheck/extends")
 DEFAULTS: Final = Path(__file__).parent / "defaults" / NAME
-DEFAULT_RULES: Final = DEFAULTS.parent / "rules"
+# The folder ``sync`` writes the shared base configurations into.
+BASE: Final = ".plumbcheck"
 # The keys whose values are paths, relative to the file naming them.
 PATHS: Final = ("RULES", "GUIDES")
 GITHUB_RAW: Final = re.compile(
@@ -154,19 +156,60 @@ def load(root: Path | None = None) -> Config:
     return merge(defaults, resolve(str(own)))
 
 
-def rules(found: Config) -> Path:
-    """The ``RULES`` folder of a configuration."""
-    return Path(str(found.get("RULES") or DEFAULT_RULES))
+def rules(found: Config) -> str:
+    """The ``RULES`` folder of a configuration, or "" without one."""
+    return str(found.get("RULES") or "")
 
 
-def rule_file(root: Path, found: Config, name: str) -> Path | None:
-    """The configuration file ``name`` of a linter in ``root``.
+def rule_file(root: Path, name: str) -> Path | None:
+    """The configuration file ``name`` of a linter in the repository ``root``.
 
-    The repository's own, else the RULES folder's, else the defaults', else
-    none: the tool's own defaults.
+    The repository's own (which inherits the base natively), else the base
+    in ``.plumbcheck/``, else none: the tool's own defaults.
     """
-    candidates = (root / name, rules(found) / name, DEFAULT_RULES / name)
+    candidates = (root / name, root / BASE / name)
     return next((c for c in candidates if c.is_file()), None)
+
+
+def _toplevel(folder: Path) -> Path | None:
+    found = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=folder,
+        capture_output=True,
+        text=True,
+    )
+    return Path(found.stdout.strip()) if found.returncode == 0 else None
+
+
+def owner(path: Path) -> Path | None:
+    """The repository a file belongs to, or None when plumbcheck skips it.
+
+    It is the nearest folder above the file with a plumbcheck.yml, up to the
+    file's git toplevel.
+    """
+    folder = path if path.is_dir() else path.parent
+    while not folder.is_dir():
+        folder = folder.parent  # a deleted file's folder may be gone too
+    top = _toplevel(folder)
+    if top is None:
+        return None
+    for candidate in [folder, *folder.parents]:
+        if (candidate / NAME).is_file():
+            return candidate
+        if candidate == top:
+            return None
+    return None
+
+
+def grouped(paths: Iterable[Path]) -> dict[Path, list[str]]:
+    """Absolute ``paths`` by their repository, relative to it; others dropped."""
+    found: dict[Path, list[str]] = {}
+    for path in paths:
+        root = owner(path.resolve())
+        if root is not None:
+            relative = path.resolve().relative_to(root.resolve()).as_posix()
+            found.setdefault(root, []).append(relative)
+    return found
 
 
 def linters(config: Config) -> dict[str, Config]:

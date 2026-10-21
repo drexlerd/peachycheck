@@ -64,7 +64,8 @@ def test_init_sets_a_repository_up_once(
         cli.WORKFLOW.format(ref="v0.1.0")
         + "        with:\n          token: ${{ secrets.SUBMODULES_TOKEN }}\n"
     )
-    assert (tmp_path / "ruff.toml").is_file()
+    assert (tmp_path / "ruff.toml").read_text() == cli.INHERIT["ruff.toml"]
+    assert (tmp_path / ".plumbcheck" / "ruff.toml").is_file()
     assert release == [(tmp_path, "plumbcheck==0.1.0")]
     first = capsys.readouterr().out
     assert "plumbcheck.yml: written" in first
@@ -218,7 +219,6 @@ def test_no_package_contains_guides_or_an_organization_s_content(
         members = _members(dist)
         # The defaults and their rules ship.
         assert any(n.endswith("defaults/plumbcheck.yml") for n in members)
-        assert any(n.endswith("defaults/rules/.vale.ini") for n in members)
         # Only names: a failure must not print a guide's text.
         found = [
             name

@@ -11,22 +11,28 @@
 # <LINTER>_FILTER_REGEX_INCLUDE, <LINTER>_FILTER_REGEX_EXCLUDE and
 # <LINTER>_ARGUMENTS (appended to its command).
 
-# The folder of the linters' fallback configurations: a linter's `config`
-# file is the repository's own, else this folder's, else the tool's defaults.
-RULES: rules
-
-# The folder of the guides (languages/*/language.toml and overlay.toml,
-# sources.toml, metrics.toml) that `check`, `show` and `index` read and lint
-# reports cite; none by default.
-# GUIDES: standards
+# GUIDES: the folder of an organization's guides (languages/*/language.toml
+# and overlay.toml, sources.toml, metrics.toml) that `check`, `show` and
+# `index` read and lint reports cite; none by default.
+# RULES: a folder the linters' `list` commands may name as {rules}.
+# FILES: per project type (or `general`, for every repository), the base
+# configurations `sync` writes into the repository's .plumbcheck/ folder,
+# such as `ruff.toml: rules/ruff.toml`; none by default.
+#
+# plumbcheck holds no opinions: this file only says how to run and read each
+# linter and project type. Every linter runs with its own defaults unless a
+# configuration says otherwise.
 
 # One entry per linter. A linter checks the files with its `extensions`, or
 # every file for `language: general`; `language` names the language of the
 # guides whose guidelines its findings cite. `command` gets the files
 # appended ({python} is plumbcheck's interpreter, {rules} the RULES folder);
 # `fix`, if any, runs first with `lint --fix`. `config` passes the
-# repository's own file of that name, else the one in RULES. `output` parses
-# the findings: json-ruff, json-eslint, json-vale, json-gitleaks or
+# repository's own file of that name, else the base in .plumbcheck/, else
+# none; with `required`, the linter skips a repository without one (the tool
+# cannot run without), and `merge: yaml` lays the repository's file over the
+# base (clang-tidy cannot extend another file). `output` parses the
+# findings: json-ruff, json-eslint, json-vale, json-gitleaks, json-j2lint or
 # regex:<pattern> (groups path, line, rule, message; `rule` names the rule
 # when the pattern has none). `ok` lists the exit codes that mean "ran";
 # `requires` is a file the linter needs, and `missing` says how to get it.
@@ -53,22 +59,14 @@ LINTERS:
     fix: ruff format --no-cache --force-exclude --quiet
     config: {file: ruff.toml, flag: --config}
     output: json-ruff
-  PYTHON_JINJA_ENVIRONMENT:
-    language: python
-    extensions: [.py]
-    aliases: [jinja-environment]
-    link: https://jinja.palletsprojects.com/en/stable/api/#jinja2.Environment
-    command: "{python} -m plumbcheck.checks.jinja_environment"
-    output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<message>.*)$'
-    rule: environment
-  JINJA_TAGS:
+  J2LINT:
     language: jinja
     extensions: [.j2, .jinja, .jinja2]
-    aliases: [jinja-tags]
-    link: https://jinja.palletsprojects.com/en/stable/templates/#whitespace-control
-    command: "{python} -m plumbcheck.checks.jinja"
-    output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<message>.*)$'
-    rule: tags
+    aliases: [j2lint]
+    link: https://github.com/aristanetworks/j2lint#rules
+    command: j2lint --json
+    output: json-j2lint
+    ok: [0, 2]
   RST_DOC8:
     language: rst
     extensions: [.rst]
@@ -82,7 +80,7 @@ LINTERS:
     aliases: [vale]
     link: https://vale.sh/docs/
     command: vale --no-exit --output JSON
-    config: {file: .vale.ini, flag: --config}
+    config: {file: .vale.ini, flag: --config, required: true}
     output: json-vale
     ok: [0]
   SPELL_CODESPELL:
@@ -102,6 +100,7 @@ LINTERS:
     # ESLint 9 has no `unix` formatter.
     command: node_modules/.bin/eslint --format json
     fix: node_modules/.bin/eslint --fix
+    config: {file: eslint.config.mjs, flag: --config, required: true}
     output: json-eslint
     requires: node_modules/.bin/eslint
     missing: run `npm ci` first
@@ -116,7 +115,7 @@ LINTERS:
     aliases: [clang-tidy]
     link: https://clang.llvm.org/extra/clang-tidy/checks/list.html
     command: clang-tidy -p build/standards --quiet
-    config: {file: .clang-tidy, flag: --config-file}
+    config: {file: .clang-tidy, flag: --config-file, merge: yaml}
     output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'
     requires: build/standards/compile_commands.json
     missing: configure first (`plumbcheck run` creates it)
@@ -134,9 +133,9 @@ LINTERS:
     ok: [0]
 
 # The tools `plumbcheck install` downloads into ~/.cache/plumbcheck/bin,
-# checked against their sha256 (linux x64). ruff, codespell, doc8 and
-# clang-tidy are pinned Python dependencies of plumbcheck; eslint is the
-# repository's own (node_modules).
+# checked against their sha256 (linux x64). ruff, codespell, doc8,
+# clang-tidy and j2lint are pinned Python dependencies of plumbcheck; eslint
+# is the repository's own (node_modules).
 VERSIONS:
   vale:
     version: 3.24.0
@@ -163,28 +162,6 @@ PROJECT_TYPES:
       - uv run --no-sync ruff format --check .
       - uv run --no-sync pyright
       - uv run --no-sync pytest
-  verdog-project:
-    title: Verdog project
-    markers: [project.json]
-    # Its pyproject.toml is generated by Verdog, so it is no plain Python package.
-    replaces: [python-package]
-    # pyright and pytest use the first workflow environment that has pytest,
-    # else the first one (pytest added on top); the tests are the repository's
-    # own, not those of imported workflows.
-    setup: [uv tool install verdog-cli, verdog sync]
-    commands:
-      - verdog check
-      - uv tool run ruff check .
-      - uv tool run ruff format --check .
-      - >-
-        uv tool run pyright --pythonpath "$(for p in .verdog/environments/*/bin/python;
-        do "$p" -c 'import pytest' 2>/dev/null && echo "$p" && exit; done;
-        ls .verdog/environments/*/bin/python | head -1)"
-      - >-
-        test ! -d tests || uv run --no-project --python "$(for p in .verdog/environments/*/bin/python;
-        do "$p" -c 'import pytest' 2>/dev/null && echo "$p" && exit; done;
-        ls .verdog/environments/*/bin/python | head -1)" --with pytest python -m
-        pytest -q -p no:cacheprovider tests
   typescript:
     title: TypeScript
     markers: [package.json]
@@ -194,8 +171,8 @@ PROJECT_TYPES:
   cpp:
     title: C++
     markers: [CMakeLists.txt]
-    # Native dependencies may come from Python wheels, so the Python types sync first.
-    after: [python-package, verdog-project]
+    # Native dependencies may come from Python wheels, so Python syncs first.
+    after: [python-package]
     setup: [cmake -S . -B build/standards -DCMAKE_EXPORT_COMPILE_COMMANDS=ON]
     # The Stop hook configures only while build/standards is missing.
     creates: build/standards
@@ -208,16 +185,3 @@ PROJECT_TYPES:
       configurePresets: cmake --preset standards
       buildPresets: cmake --build --preset standards --parallel
       testPresets: ctest --preset standards --output-on-failure
-
-# The tool configurations `sync` writes into a repository of each type, so
-# editors, hooks and CI read the same rules; `sync --check` fails on any
-# difference. Vale's .vale.ini stays in RULES: its StylesPath is relative to
-# it.
-FILES:
-  python-package:
-    ruff.toml: rules/ruff.toml
-  verdog-project:
-    ruff.toml: rules/verdog-project/ruff.toml
-    pyrightconfig.json: rules/verdog-project/pyrightconfig.json
-  typescript:
-    eslint.config.mjs: rules/eslint.config.mjs

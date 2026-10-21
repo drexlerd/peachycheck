@@ -1,7 +1,7 @@
 # plumbcheck
 
 One `plumbcheck.yml` per repository runs the native linters (ruff, eslint,
-clang-tidy, vale, doc8, codespell, gitleaks), the project's own checks
+clang-tidy, vale, doc8, codespell, j2lint, gitleaks), the project's own checks
 (build, tests, type checks) and the hooks that apply them while Claude Code
 or Codex works. Locally, in the agents' hooks and in CI it is the same
 command with the same configuration, so a change that passes one passes all.
@@ -11,11 +11,18 @@ steps and editor settings that drift apart. plumbcheck keeps the shared part
 in one file an organization publishes, and each repository `EXTENDS` it,
 overriding only what it must.
 
-- **Native linters, no wrappers.** Each linter runs with its own
-  configuration file (`ruff.toml`, `.clang-tidy`, `.vale.ini`, ...); a
-  finding names the linter, its rule and the rule's documentation.
-- **Deviations only.** A configuration file holds only the settings that
-  differ from the tool's defaults, each with its reason.
+- **No opinions.** plumbcheck only knows how to run and read each linter
+  and project type; every linter runs with its own defaults until an
+  organization or a repository configures it.
+- **Native linters, native inheritance.** Each linter reads its own
+  configuration file. `sync` writes an organization's base configurations
+  into `.plumbcheck/`; the repository's own `ruff.toml`,
+  `pyrightconfig.json` or `eslint.config.mjs` extends them and adds only
+  its deviations. A finding names the linter, its rule and the rule's
+  documentation.
+- **Per file.** Each file belongs to the nearest folder above it with a
+  `plumbcheck.yml`, and is judged by that repository's configuration; one
+  edit or one `lint` may span repositories.
 - **Finding-free.** Every finding fails; there is no baseline. On a pull
   request only the changed files count, on the default branch every file.
 - **Guides, optional.** An organization may point `GUIDES` at its style
@@ -31,7 +38,7 @@ plumbcheck install             # download the pinned vale and gitleaks
 plumbcheck hooks install       # lint after each edit and before Claude/Codex stop
 ```
 
-ruff, codespell, doc8 and clang-tidy are pinned dependencies; vale and
+ruff, codespell, doc8, clang-tidy and j2lint are pinned dependencies; vale and
 gitleaks are downloaded into `~/.cache/plumbcheck/bin`, checked against their
 sha256 (Linux x64); eslint is the repository's own (`node_modules`).
 
@@ -49,9 +56,11 @@ plumbcheck upgrade [--to 0.2.0]    # later: move it to another version
    installed commit for a git install;
 2. `.github/workflows/plumbcheck.yml`, a job that runs the action below
    (passing `SUBMODULES_TOKEN` when the repository has a `.gitmodules`);
-3. the shared tool configurations (`sync`) and the pinned vale and gitleaks
-   (`install`);
-4. for a Python project with a `pyproject.toml`, `plumbcheck==<version>` in
+3. the base configurations in `.plumbcheck/` (`sync`) and, where the
+   repository has none, its own `ruff.toml`, `pyrightconfig.json` or
+   `eslint.config.mjs` holding just the line that extends the base;
+4. the pinned vale and gitleaks (`install`);
+5. for a Python project with a `pyproject.toml`, `plumbcheck==<version>` in
    the `dev` dependency group (`uv add --dev`), when installed from PyPI.
 
 `upgrade` moves `PLUMBCHECK_VERSION`, the refs of the action and the
@@ -105,7 +114,7 @@ required status check stays the same.
 
 ```sh
 plumbcheck types          # the recognised project types
-plumbcheck sync [--check] # write (or compare) the shared tool configurations
+plumbcheck sync [--check] # write (or compare) .plumbcheck/, the base configurations
 plumbcheck run            # the types' setup and check commands
 plumbcheck lint [--fix]   # findings in files changed since the merge base
 plumbcheck lint --all     # findings anywhere
@@ -149,21 +158,43 @@ PYTHON_RUFF_ARGUMENTS: [--preview]
 | `LINTERS` | one entry per linter: language, extensions, command, fix, config, output parser, ... |
 | `VERSIONS` | the downloaded tools, by version, URL and sha256 |
 | `PROJECT_TYPES` | markers, setup and check commands of each project type |
-| `FILES` | the tool configurations `sync` writes into a repository of each type |
-| `RULES` | the folder of the linters' fallback configurations |
+| `FILES` | per project type (or `general`), the base files `sync` writes into `.plumbcheck/` |
+| `RULES` | a folder the linters' `list` commands may name as `{rules}` |
 | `GUIDES` | the folder of the organization's guides (optional) |
 
-A linter's configuration file is the repository's own (`ruff.toml`,
-`.clang-tidy`, `.vale.ini`, `eslint.config.mjs`), else the one in `RULES`,
-else the one in plumbcheck's defaults, else none (the tool's defaults).
+### Base and overrides
+
+`FILES` names, per project type or under `general` for every repository,
+the files `sync` writes into the repository's `.plumbcheck/` folder (a
+folder, such as Vale's styles, brings every file below it). The folder is
+generated and committed, so editors and CI read it offline; `sync --check`
+fails when it differs. A base file is read from `.plumbcheck/`, so its
+paths start there: `"../**/tests/**"` for ruff's per-file ignores,
+`"extraPaths": ["../src"]` for pyright.
+
+A repository overrides a base setting in its own configuration, which
+inherits the base natively:
+
+| tool | the repository's own file |
+|---|---|
+| ruff | `ruff.toml` (or `[tool.ruff]`): `extend = ".plumbcheck/ruff.toml"` |
+| pyright | `pyrightconfig.json`: `"extends": ".plumbcheck/pyrightconfig.json"` |
+| ESLint | `eslint.config.mjs`: `import base from "./.plumbcheck/eslint.config.mjs"; export default [...base, ...]` |
+| Vale | `.vale.ini` with `StylesPath = .plumbcheck/styles` and the base's styles |
+| clang-tidy | `.clang-tidy` with deviations only: `lint` lays it over the base (`Checks` joined, `CheckOptions` merged) |
+
+A linter gets the repository's own file, else the base, else none: then
+it runs with its defaults, or, for Vale and ESLint, which cannot run
+without a configuration, it is skipped. Coarse switches stay in
+`plumbcheck.yml`: `DISABLE_LINTERS`, `<LINTER>_FILTER_REGEX_EXCLUDE`,
+`<LINTER>_ARGUMENTS`.
 
 ### Linters
 
 | linter | files | tool |
 |---|---|---|
 | `PYTHON_RUFF`, `PYTHON_RUFF_FORMAT` | `.py` | ruff |
-| `PYTHON_JINJA_ENVIRONMENT` | `.py` | `checks/`: Jinja environments strip their tag lines |
-| `JINJA_TAGS` | `.j2`, `.jinja`, `.jinja2` | `checks/`: at most one block tag per line |
+| `J2LINT` | `.j2`, `.jinja`, `.jinja2` | j2lint |
 | `RST_DOC8`, `SPELL_VALE`, `SPELL_CODESPELL` | `.rst` | doc8, vale, codespell |
 | `TYPESCRIPT_ESLINT` | `.ts`, `.tsx` | the repository's `node_modules/.bin/eslint` |
 | `CPP_CLANG_TIDY` | C++ | clang-tidy on `build/standards/compile_commands.json` |
@@ -174,36 +205,16 @@ else the one in plumbcheck's defaults, else none (the tool's defaults).
 | type | markers | commands |
 |---|---|---|
 | python-package | `pyproject.toml`, `uv.lock` | uv sync, ruff check, ruff format, pyright, pytest |
-| verdog-project | `project.json` | verdog check and sync, ruff, pyright, pytest |
 | typescript | `package.json` | npm ci, `npm run check`, `npm test` |
 | cpp | `CMakeLists.txt` | cmake configure, build, ctest |
 
+An organization may add its own types (with `replaces` to supersede one).
 A repository may have several types, such as C++ with Python bindings. A
-type runs after the types its `after` names (`cpp` after the Python types,
+type runs after the types its `after` names (`cpp` after `python-package`,
 whose `uv sync` installs native dependencies from wheels). A `standards`
 preset in `CMakePresets.json` or `CMakeUserPresets.json` replaces the plain
 configure, build or test command of its kind; its binary directory stays
 `build/standards` with `CMAKE_EXPORT_COMPILE_COMMANDS=ON`, or `run` fails.
-
-### Defaults
-
-The defaults' `rules/` hold only deviations from the tools' defaults that
-make sense for any repository:
-
-- `ruff.toml` (python-package, synced): `extend-select = ["I", "B"]`, import
-  sorting, which `ruff format` leaves alone, and bugbear's likely bugs. No
-  line length, docstring convention or complexity limit: those are an
-  organization's choice.
-- `verdog-project/ruff.toml` and `verdog-project/pyrightconfig.json`
-  (synced): the same, plus what a Verdog project needs: imported workflows
-  (`external/`) and generated declarations (`__init__.py`) are excluded,
-  and pyright resolves imports from `src/`.
-- `eslint.config.mjs` (typescript, synced): ESLint has no rules by default;
-  this enables `@eslint/js`'s and typescript-eslint's recommended ones.
-- `.vale.ini` (not synced): Vale needs a configuration to run; this one
-  checks with Vale's own style, without its spelling (codespell checks that).
-
-pyright, clang-tidy, doc8 and codespell run with their own defaults.
 
 ## Hooks
 
@@ -218,8 +229,13 @@ pyright, clang-tidy, doc8 and codespell run with their own defaults.
   `setup`); it blocks the stop on a failure, at most twice in a row, then
   lets the agent stop and shows what remains.
 
-Both act only in a repository whose root has a `plumbcheck.yml`, so one
-install serves the whole user; elsewhere they print nothing. A repository
+Each edited file counts for its own repository (the nearest folder above it
+with a `plumbcheck.yml`), so a Codex patch that spans repositories is
+judged file by file. The Stop hook checks every repository with changes at
+or below the session's folder (its own, and side-by-side worktrees under a
+parent folder, three levels deep), each with its own lint and commands.
+Files of no such repository are left alone, so one install serves the
+whole user. A repository
 whose `.venv` has another version of plumbcheck (its dev pin) answers with
 that version. `PLUMBCHECK_HOOKS=off` turns them off;
 `plumbcheck hooks uninstall [--claude] [--codex]` removes exactly these

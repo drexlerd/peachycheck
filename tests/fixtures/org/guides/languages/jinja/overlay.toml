@@ -1,4 +1,4 @@
 ["house/one-tag"]
-text = "Put at most one block tag on a line."
-checked_by = ["jinja-tags"]
+text = "Put each block statement on a line of its own, never inside prose."
+checked_by = ["j2lint:S0", "j2lint:S7"]
 priority = 1
