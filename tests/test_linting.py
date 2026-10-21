@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from plumbcheck import cli, config, engine, hooks, linting
 
@@ -54,17 +55,17 @@ def _write(path: Path, text: str) -> Path:
 def _repository(
     tmp_path: Path, contents: dict[str, str], *, configured: bool = True
 ) -> tuple[Path, str]:
-    """A committed repository of the sample organization, its ruff.toml synced.
+    """A committed repository of the sample organization, its base synced.
 
     Without ``configured``, it has no plumbcheck.yml.
     """
     root = tmp_path / "repository"
     root.mkdir()
-    if configured:
-        shutil.copy(ORG / "rules" / "ruff.toml", root)
-        _write(root / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
     for path, text in contents.items():
         _write(root / path, text)
+    if configured:
+        _write(root / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
+        cli.sync(root, check=False)
     _git(root, "init", "-q")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "base")
@@ -139,9 +140,10 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     data = _archive(
         {
             "plumbcheck.yml": "EXTENDS: base.yml\nRULES: rules\nFILES:\n"
-            "  python-package: {ruff.toml: rules/ruff.toml}\n",
+            "  python-package: {ruff.toml: rules/ruff.toml, vale: rules/vale}\n",
             "base.yml": "GUIDES: guides\n",
             "rules/ruff.toml": "line-length = 70\n",
+            "rules/vale/A/B.yml": "extends: existence\n",
         }
     )
 
@@ -159,12 +161,16 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     assert loaded["FILES"]["python-package"]["ruff.toml"] == str(
         snapshot / "rules/ruff.toml"
     )
-    # The defaults' other types stay.
-    assert "typescript" in loaded["FILES"]
     (tmp_path / "pyproject.toml").write_text("")
     (tmp_path / "uv.lock").write_text("")
-    assert cli.sync(tmp_path, check=False) == ["ruff.toml"]
-    assert (tmp_path / "ruff.toml").read_text() == "line-length = 70\n"
+    # A folder brings every file below it.
+    assert cli.sync(tmp_path, check=False) == [
+        ".plumbcheck/ruff.toml",
+        ".plumbcheck/vale/A/B.yml",
+    ]
+    base = tmp_path / ".plumbcheck"
+    assert (base / "ruff.toml").read_text() == "line-length = 70\n"
+    assert (base / "vale/A/B.yml").is_file()
     config.load(tmp_path)
     assert fetched == ["https://codeload.github.com/o/org/tar.gz/abc"]
 
@@ -177,7 +183,8 @@ def test_a_repository_without_its_own_file_gets_the_defaults(
     assert "PYTHON_RUFF" in linters and "CPP_CLANG_TIDY" in linters
     # Run by the project's commands, not by ``lint``.
     assert "TYPESCRIPT_TSC" not in linters
-    assert config.rules(found) == config.DEFAULT_RULES
+    # No opinions: no base configurations, no guides.
+    assert config.rules(found) == "" and "FILES" not in found
     assert "GUIDES" not in found
 
 
@@ -301,7 +308,7 @@ def test_generated_deleted_and_test_files_need_no_docstrings(
     assert found.findings == [] and found.problems == []
 
 
-def test_a_linter_s_config_is_the_repository_s_the_rules_or_the_defaults(
+def test_a_linter_s_config_is_the_repository_s_the_base_or_none(
     tmp_path: Path,
 ) -> None:
     root, _ = _repository(tmp_path, {})
@@ -312,19 +319,52 @@ def test_a_linter_s_config_is_the_repository_s_the_rules_or_the_defaults(
         spec["config"] = {"file": name, "flag": "-c"}
         return linting._command(root, spec, "command")[1:]  # pyright: ignore[reportPrivateUsage]
 
-    assert flags("ruff.toml") == ["-c", str(root / "ruff.toml")]
-    assert flags(".vale.ini") == ["-c", str(config.DEFAULT_RULES / ".vale.ini")]
+    base = root / config.BASE
+    assert flags("ruff.toml") == ["-c", str(base / "ruff.toml")]
     assert flags(".missing") == []
-    (root / "ruff.toml").unlink()
-    assert flags("ruff.toml") == ["-c", str(ORG / "rules" / "ruff.toml")]
+    _write(root / "ruff.toml", 'extend = ".plumbcheck/ruff.toml"\n')
+    assert flags("ruff.toml") == ["-c", str(root / "ruff.toml")]
+
+
+def test_a_repository_s_clang_tidy_is_laid_over_the_base(
+    tmp_path: Path,
+) -> None:
+    base = _write(
+        tmp_path / "base.yml",
+        "Checks: '-*,bugprone-*'\nHeaderFilterRegex: 'src/'\n"
+        "CheckOptions:\n  - key: a.x\n    value: '1'\n",
+    )
+    own = _write(
+        tmp_path / "own.yml",
+        "Checks: '-bugprone-easily-swappable-parameters'\n"
+        "CheckOptions:\n  b.y: '2'\n",
+    )
+    merged = yaml.safe_load(linting.merged_yaml(base, own).read_text())
+    assert merged == {
+        "Checks": "-*,bugprone-*,-bugprone-easily-swappable-parameters",
+        "HeaderFilterRegex": "src/",
+        "CheckOptions": {"a.x": "1", "b.y": "2"},
+    }
+
+
+def test_a_tool_that_needs_a_configuration_skips_without_one(
+    tmp_path: Path,
+) -> None:
+    root, _ = _repository(
+        tmp_path, {"a.rst": "Title\n=====\n\nIt is is fine.\n"}
+    )
+    assert {f.linter for f in linting.lint(root, ["a.rst"]).findings} >= {
+        "SPELL_VALE"
+    }
+    (root / config.BASE / ".vale.ini").unlink()
+    assert "SPELL_VALE" not in {
+        f.linter for f in linting.lint(root, ["a.rst"]).findings
+    }
 
 
 def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
-    root, _ = _repository(
-        tmp_path, {"a.cpp": "int f();\n", "a.ts": "var x = 1;\n"}
-    )
-    assert linting.lint(root, ["a.cpp", "a.ts"]).problems == [
-        "TYPESCRIPT_ESLINT needs node_modules/.bin/eslint: run `npm ci` first",
+    root, _ = _repository(tmp_path, {"a.cpp": "int f();\n"})
+    assert linting.lint(root, ["a.cpp"]).problems == [
         "CPP_CLANG_TIDY needs build/standards/compile_commands.json: "
         "configure first (`plumbcheck run` creates it)",
     ]
@@ -364,8 +404,7 @@ _LEAK = "vA0jG5sF1dH6cN4bY7rX2wP9mLk3Tv8qZ"[::-1]
 FIRES = [
     ("PYTHON_RUFF", "a.py", VIOLATION, True),
     ("PYTHON_RUFF_FORMAT", "a.py", CLEAN.replace("left + right", "left+right"), False),
-    ("PYTHON_JINJA_ENVIRONMENT", "a.py", "import jinja2\n\nT = jinja2.Environment()\n", True),
-    ("JINJA_TAGS", "a.j2", "{% if a %}{% if b %}\nx\n{% endif %}{% endif %}\n", True),
+    ("J2LINT", "a.j2", "{% if a %}{% if b %}\nx\n{% endif %}{% endif %}\n", True),
     ("RST_DOC8", "a.rst", "The gate measures the change.   \n", True),
     ("SPELL_VALE", "a.rst", "The gate is is ready.\n", True),
     ("SPELL_CODESPELL", "a.rst", "The gate measures teh change.\n", True),
@@ -525,6 +564,7 @@ def test_post_edit_fixes_and_feeds_the_findings_back(tmp_path: Path) -> None:
 
 def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
     root, _ = _hooked(tmp_path, {})
+    (root / "new.txt").write_text("changed\n")
     problems = ["a.py has 1 findings"]
 
     def check(found: Path) -> list[str]:
@@ -541,8 +581,7 @@ def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
     assert (
         "after 2 blocked attempts" in json.loads(third.stdout)["systemMessage"]
     )
-    counters = Path(_git(root, "rev-parse", "--absolute-git-dir").strip())
-    assert not list((counters / "plumbcheck").iterdir())
+    assert not list(hooks.COUNTERS.expanduser().iterdir())
     # A new turn starts counting again.
     assert hooks.stop(again, check).code == 2
     assert hooks.stop(claude, check).code == 2
@@ -563,6 +602,7 @@ def test_hooks_act_only_with_a_plumbcheck_yml_and_not_when_off(
         tmp_path / "plain", {"a.py": VIOLATION}, configured=False
     )
     hooked, _ = _hooked(tmp_path / "hooked", {"a.py": VIOLATION})
+    (hooked / "new.txt").write_text("changed\n")
 
     def check(found: Path) -> list[str]:
         return ["fails"]
@@ -726,3 +766,67 @@ def test_without_guides_a_finding_names_the_linter_s_documentation(
     root, _ = _repository(tmp_path, {"a.py": "import os\n"}, configured=False)
     (error,) = linting.report(root, linting.lint(root, ["a.py"]))
     assert "    - see https://docs.astral.sh/ruff/rules/" in error.splitlines()
+
+
+def _sibling(parent: Path, name: str, ruff: str) -> Path:
+    """A committed repository ``name`` in ``parent`` with its own ruff.toml."""
+    (parent / name).mkdir()
+    root, head = _repository(parent / name, {"ruff.toml": ruff, "a.py": CLEAN})
+    _git(root, "update-ref", "refs/remotes/origin/main", head)  # pushed
+    target = parent / name.upper()
+    root.rename(target)
+    return target
+
+
+def test_one_patch_across_two_repositories_judges_each_file_by_its_own(
+    tmp_path: Path,
+) -> None:
+    strict = _sibling(tmp_path, "strict", 'extend = ".plumbcheck/ruff.toml"\n')
+    loose = _sibling(
+        tmp_path,
+        "loose",
+        'extend = ".plumbcheck/ruff.toml"\n[lint]\nextend-ignore = ["N802"]\n',
+    )
+    for root in (strict, loose):
+        (root / "a.py").write_text(VIOLATION)
+    patch = (
+        "*** Begin Patch\n*** Update File: STRICT/a.py\n"
+        "*** Update File: LOOSE/a.py\n*** End Patch\n"
+    )
+    codex = {
+        "cwd": str(tmp_path),
+        "turn_id": "t",
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+    }
+    reply = hooks.post_edit(codex)
+    assert reply.code == 2
+    assert "In STRICT/:" in reply.stderr and "In LOOSE/:" in reply.stderr
+    strict_part, loose_part = reply.stderr.split("In LOOSE/:")
+    assert "N802" in strict_part.split("In STRICT/:")[1]
+    assert "N802" not in loose_part and "D103" in loose_part
+    # `lint` with files of both does the same.
+    found = dict(linting.lint_files([strict / "a.py", loose / "a.py"]))
+    assert "N802" in {f.rule for f in found[strict].findings}
+    assert "N802" not in {f.rule for f in found[loose].findings}
+
+
+def test_stop_in_a_parent_folder_checks_each_changed_repository(
+    tmp_path: Path,
+) -> None:
+    first = _sibling(tmp_path, "first", "")
+    second = _sibling(tmp_path, "second", "")
+    _sibling(tmp_path, "clean", "")
+    (first / "new.py").write_text(CLEAN)
+    (second / "new.py").write_text(CLEAN)
+    checked: list[Path] = []
+
+    def check(root: Path) -> list[str]:
+        checked.append(root)
+        return [f"{root.name} fails"]
+
+    reply = hooks.stop({"cwd": str(tmp_path), "session_id": "p"}, check)
+    assert sorted(checked) == sorted([first, second])
+    assert reply.code == 2
+    assert "In FIRST/:\nFIRST fails" in reply.stderr
+    assert "In SECOND/:\nSECOND fails" in reply.stderr
