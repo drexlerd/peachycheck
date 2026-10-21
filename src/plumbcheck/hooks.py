@@ -192,9 +192,19 @@ def respond(reply: Reply) -> int:
 def run(event: str) -> int:
     """Answer one hook ``event`` (``post-edit`` or ``stop``) from stdin."""
     payload = cast(dict[str, Any], json.loads(sys.stdin.read() or "{}"))
-    return respond(
-        post_edit(payload) if event == "post-edit" else stop(payload)
-    )
+    try:
+        reply = post_edit(payload) if event == "post-edit" else stop(payload)
+    except Exception as error:  # A hook must never crash the agent.
+        reply = failed(payload, event, error)
+    return respond(reply)
+
+
+def failed(payload: dict[str, Any], event: str, error: Exception) -> Reply:
+    """Report a failure of the hook itself without blocking the agent."""
+    message = f"verdog-standards hook {event} failed: {error!r}"
+    if _codex(payload) and event == "stop":
+        return Reply(stdout=json.dumps({"systemMessage": message}))
+    return Reply(0 if _codex(payload) else 1, stderr=message)
 
 
 MARK: Final = "verdog-standards hook "

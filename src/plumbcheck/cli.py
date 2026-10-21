@@ -198,8 +198,14 @@ def run(root: Path) -> int:
     return 0
 
 
+# The empty tree: diffing against it lists every tracked file.
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
 def base_of(root: Path) -> str:
     """The merge base of ``HEAD`` with the main branch, else ``HEAD~1``.
+
+    A repository with neither diffs against the empty tree.
 
     The main branch is ``origin/MAIN_BRANCH``, else ``origin/HEAD``, which
     many clones lack, else ``origin/main``.
@@ -219,7 +225,15 @@ def base_of(root: Path) -> str:
         )
         if found.returncode == 0:
             return found.stdout.strip()
-    return "HEAD~1"
+    previous = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "HEAD~1"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Without a main branch or a parent commit every file counts as changed.
+    return "HEAD~1" if previous.returncode == 0 else EMPTY_TREE
 
 
 def check() -> int:
