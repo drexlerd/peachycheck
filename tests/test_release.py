@@ -1,6 +1,7 @@
 """Releases: the version, init and upgrade, pinned hooks and the packages."""
 
 import io
+import re
 import subprocess
 import tarfile
 import tomllib
@@ -9,15 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from verdog_standards import cli, config, hooks
+from verdog_standards import cli, config, engine, hooks
+from verdog_standards import sources as s
 
 ROOT = Path(__file__).resolve().parents[1]
-# Text of the C++ Core Guidelines and of their generated tree.
-CORE_GUIDELINES = (
-    "(a rule title)",
-    "(a rule title)",
-    "LicenseRef-Standard-Cpp-Foundation; see `LICENSE`",
-)
 
 
 def test_the_version_is_the_project_s(
@@ -206,12 +202,21 @@ def _members(dist: Path) -> dict[str, bytes]:
 
 def test_no_package_contains_the_core_guidelines(dists: list[Path]) -> None:
     assert sorted(d.suffix for d in dists) == [".gz", ".whl"]
+    # Their rules' titles, as test_sources checks the committed files.
+    guide = engine.guides()["cpp-core-guidelines"]
+    rules = s.read_index(engine.tree(guide))
+    titles = {r.title.partition(": ")[2] for r in rules} - {""}
+    quoted = re.compile("|".join(re.escape(t) for t in titles if len(t) > 24))
     for dist in dists:
         members = _members(dist)
-        assert not [n for n in members if "cpp-core-guidelines" in n]
-        for name, content in members.items():
-            text = content.decode(errors="ignore")
-            assert not any(m in text for m in CORE_GUIDELINES), name
+        # Only names: a failure must not print the guide's text.
+        found = [
+            name
+            for name, content in members.items()
+            if "cpp-core-guidelines" in name
+            or quoted.search(content.decode(errors="ignore"))
+        ]
+        assert found == [], dist.name
 
 
 def test_the_wheel_carries_every_license(dists: list[Path]) -> None:
