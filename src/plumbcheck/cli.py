@@ -1,17 +1,15 @@
-"""The command line ``plumbcheck``: lint, check, show, sync and run.
+"""The command line ``plumbcheck``: lint, check, show and sync.
 
-A repository's type is recognised from marker files; the ``PROJECT_TYPES`` of
-its ``plumbcheck.yml`` name each type's markers, the types it replaces and its
-commands, and ``FILES`` the tool configurations every repository of that
-type shares. ``sync`` writes them, ``sync --check`` fails
-on any difference and ``run`` executes the types' commands, as the shared
-workflow does; ``lint`` runs the linters and ``hook`` answers the agents'
-hooks. ``init`` sets a repository up, ``upgrade`` moves it to another version.
+``FILES`` of a repository's ``plumbcheck.yml`` names the tool configurations
+it shares: those of ``general`` with every repository, the others with each
+repository that has their marker file. ``sync`` writes them, ``sync --check``
+fails on any difference; ``lint`` runs the linters and ``hook`` answers the
+agents' hooks. ``init`` sets a repository up, ``upgrade`` moves it to
+another version. Builds and tests are the repository's own CI's.
 """
 
 import argparse
 import filecmp
-import graphlib
 import importlib.metadata
 import json
 import os
@@ -47,103 +45,6 @@ USES = re.compile(
     r"(drexlerd/plumbcheck(?:/\.github/workflows/check\.yml)?@)[^\s#]+"
 )
 PIN = re.compile(r"^PLUMBCHECK_VERSION:.*$", re.M)
-
-
-def project_types(root: Path | None = None) -> dict[str, dict[str, Any]]:
-    """The ``PROJECT_TYPES`` of ``root``'s configuration, by name."""
-    return cast(
-        dict[str, dict[str, Any]], config.load(root).get("PROJECT_TYPES", {})
-    )
-
-
-def types_of(root: Path) -> list[str]:
-    """The types whose markers all exist in ``root``, minus replaced ones."""
-    known = project_types(root)
-    found = [
-        name
-        for name, spec in known.items()
-        if all((root / marker).exists() for marker in spec["markers"])
-    ]
-    replaced = {r for name in found for r in known[name].get("replaces", ())}
-    return _ordered(known, [name for name in found if name not in replaced])
-
-
-def _ordered(known: dict[str, dict[str, Any]], kept: list[str]) -> list[str]:
-    """``kept``, each type after the types of its ``after`` that it has."""
-    order = graphlib.TopologicalSorter(
-        {n: [a for a in known[n].get("after", ()) if a in kept] for n in kept}
-    )
-    return list(order.static_order())
-
-
-def _presets(root: Path) -> set[str]:
-    """The kinds of CMake presets named ``standards``, e.g. ``testPresets``."""
-    kinds: set[str] = set()
-    for name in ("CMakePresets.json", "CMakeUserPresets.json"):
-        if (root / name).is_file():
-            presets: dict[str, Any] = json.loads((root / name).read_text())
-            for kind, entries in presets.items():
-                if not isinstance(entries, list):
-                    continue  # ``version``, ``cmakeMinimumRequired``, ...
-                named = cast(list[dict[str, Any]], entries)
-                if any(e.get("name") == "standards" for e in named):
-                    kinds.add(kind)
-    return kinds
-
-
-def commands_of(root: Path, name: str, *, setup: bool = True) -> list[str]:
-    """The commands of type ``name`` in ``root``: its ``setup``, then checks.
-
-    A ``standards`` preset of a kind in ``presets`` replaces the command at
-    that kind's position. Without ``setup``, the setup commands are left out,
-    unless the type ``creates`` a path that ``root`` lacks.
-    """
-    spec = project_types(root)[name]
-    first = list(spec.get("setup", []))
-    commands = first + list(spec["commands"])
-    found = _presets(root)
-    for i, (kind, line) in enumerate(spec.get("presets", {}).items()):
-        if kind in found:
-            commands[i] = line
-    creates = spec.get("creates")
-    if setup or (creates and not (root / creates).exists()):
-        return commands
-    return commands[len(first) :]
-
-
-def _uv(pyproject: Path) -> dict[str, Any]:
-    return tomllib.loads(pyproject.read_text()).get("tool", {}).get("uv", {})
-
-
-def siblings(root: Path) -> list[str]:
-    """The ``<name>`` of each uv path source ``../<name>`` of ``root``.
-
-    The sources of the root project and of its workspace members count.
-    """
-    if not (root / "pyproject.toml").is_file():
-        return []
-    members = (
-        _uv(root / "pyproject.toml").get("workspace", {}).get("members", [])
-    )
-    projects = [root, *(m for g in members for m in sorted(root.glob(g)))]
-    names: set[str] = set()
-    for project in projects:
-        if not (project / "pyproject.toml").is_file():
-            continue
-        sources = _uv(project / "pyproject.toml").get("sources", {}).values()
-        for source in sources:
-            # ponytail: a list of sources (per platform marker) is skipped
-            if isinstance(source, dict) and "path" in source:
-                path = cast(str, source["path"])
-                folder = (project / path).resolve()
-                if folder.parent == root.resolve().parent:
-                    names.add(folder.name)
-    return sorted(names)
-
-
-def _siblings(root: Path) -> int:
-    print("\n".join(siblings(root)))
-    return 0
 
 
 def version() -> str:
@@ -183,13 +84,16 @@ def _commit() -> str:
 def base_files(root: Path) -> dict[str, Path]:
     """What ``.plumbcheck/`` of ``root`` holds: each file, by its path there.
 
-    ``FILES`` names them per type of ``root``, and under ``general`` for
-    every repository; a folder brings every file below it.
+    ``FILES`` names them under ``general`` for every repository, and under a
+    marker file, such as ``pyproject.toml``, for each repository that has
+    it; a later entry wins, and a folder brings every file below it.
     """
     files = cast(dict[str, dict[str, str]], config.load(root).get("FILES", {}))
     wanted: dict[str, Path] = {}
-    for name in [GENERAL, *types_of(root)]:
-        for target, source_name in files.get(name, {}).items():
+    for name, entries in files.items():
+        if name != GENERAL and not (root / name).exists():
+            continue
+        for target, source_name in entries.items():
             source = Path(source_name)
             below = sorted(p for p in source.rglob("*") if p.is_file())
             for path in below if source.is_dir() else [source]:
@@ -201,7 +105,7 @@ def base_files(root: Path) -> dict[str, Path]:
 def sync(root: Path, *, check: bool) -> list[str]:
     """Write ``.plumbcheck/`` of ``root``; with ``check``, only compare.
 
-    The folder holds the base configurations of the repository's types, as
+    The folder holds the base configurations of the repository, as
     ``base_files`` lists them, and nothing else.
 
     Returns:
@@ -285,14 +189,14 @@ def _uv_add(root: Path, requirement: str) -> None:
 def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
     """Pin ``plumbcheck==wanted`` in the dev group of ``root``.
 
-    Without ``add``, only an existing pin moves. A Verdog project generates
-    its pyproject.toml, so it gets none.
+    Without ``add``, only an existing pin moves. A generated pyproject.toml
+    (see ``GENERATED``) gets none.
 
     Returns:
         What was done, or "" when ``root`` is no Python project.
     """
     pyproject = root / "pyproject.toml"
-    if not pyproject.is_file() or (root / "project.json").is_file():
+    if not pyproject.is_file() or "pyproject.toml" in engine.generated(root):
         return ""
     if wanted is None:
         return "pyproject.toml: no dev pin, not installed from PyPI" * add
@@ -387,28 +291,6 @@ def upgrade(root: Path, to: str | None) -> int:
     if pinned:
         print(pinned)
     return _sync(root, check_only=False)
-
-
-def run(root: Path) -> int:
-    """Run every command of the types of ``root``; the first failure stops."""
-    for name in types_of(root):
-        for line in commands_of(root, name):
-            print(f"::group::{name}: {line}", flush=True)
-            code = subprocess.run(line, shell=True, cwd=root).returncode
-            print("::endgroup::", flush=True)
-            if code:
-                print(f"{name}: `{line}` failed ({code})")
-                return code
-    if (
-        "configurePresets" in _presets(root)
-        and not (root / "build/standards/compile_commands.json").is_file()
-    ):
-        print(
-            "the `standards` configure preset must set binaryDir "
-            "build/standards and CMAKE_EXPORT_COMPILE_COMMANDS=ON"
-        )
-        return 1
-    return 0
 
 
 # The empty tree: diffing against it lists every tracked file.
@@ -586,10 +468,8 @@ def parser() -> argparse.ArgumentParser:
         "index", help="generate the guides' trees from their pinned sources"
     )
     indexing.add_argument("guides", nargs="*", help="default: every guide")
-    commands.add_parser("types", help="the repository's recognised types")
-    syncing = commands.add_parser("sync", help="write the types' tool configs")
+    syncing = commands.add_parser("sync", help="write the shared tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
-    commands.add_parser("run", help="run the types' commands")
     initializing = commands.add_parser(
         "init", help="set the repository up: plumbcheck.yml, CI, configs"
     )
@@ -600,7 +480,6 @@ def parser() -> argparse.ArgumentParser:
         "upgrade", help="move the pins of plumbcheck to a version"
     )
     upgrading.add_argument("--to", help="default: the installed version")
-    commands.add_parser("siblings", help="the sibling repositories uv needs")
     return result
 
 
@@ -609,11 +488,6 @@ def _sync(root: Path, check_only: bool) -> int:
     verb = "differs; run `plumbcheck sync`" if check_only else "written"
     print("\n".join(f"{path}: {verb}" for path in differing) or "in sync")
     return 1 if differing and check_only else 0
-
-
-def _types(root: Path) -> int:
-    print("\n".join(types_of(root)) or "no known type")
-    return 0
 
 
 def _show(root: Path, options: argparse.Namespace) -> int:
@@ -641,12 +515,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "hook": lambda: hooks.run(options.event),
         "hooks": lambda: install_hooks(options),
         "index": lambda: index(options.guides),
-        "types": lambda: _types(root),
         "sync": lambda: _sync(root, options.check),
-        "run": lambda: run(root),
         "init": lambda: init(root, options.extends),
         "upgrade": lambda: upgrade(root, options.to),
-        "siblings": lambda: _siblings(root),
         "show": lambda: _show(root, options),
     }
     return commands[options.command]()

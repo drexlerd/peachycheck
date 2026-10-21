@@ -1,7 +1,7 @@
 """``plumbcheck lint``: the linters of ``plumbcheck.yml`` on a repository.
 
-The files are the given ones, those changed since a base, or all; generated
-files of a Verdog project are never checked. Each
+The files are the given ones, those changed since a base, or all; the
+files ``GENERATED`` lists are never checked. Each
 linter runs on the files of its extensions, and every finding fails. A
 finding names its linter and rule; the report adds the guidelines the rule
 maps to, with the leaf of each.
@@ -157,10 +157,32 @@ def merged_yaml(base: Path, own: Path) -> Path:
     return path
 
 
+def required(root: Path, spec: dict[str, Any]) -> Path | None:
+    """The first of the linter's ``requires`` files that ``root`` has.
+
+    Without ``requires``, ``root`` itself.
+    """
+    wanted = spec.get("requires") or []
+    candidates = [wanted] if isinstance(wanted, str) else wanted
+    if not candidates:
+        return root
+    return next(
+        (root / c for c in candidates if (root / c).exists()), None
+    )
+
+
 def _command(root: Path, spec: dict[str, Any], key: str) -> list[str]:
-    """The linter's command ``key`` (``command`` or ``fix``) as arguments."""
+    """The linter's command ``key`` (``command`` or ``fix``) as arguments.
+
+    ``{requires}`` is the folder of the file ``required`` found.
+    """
     found = engine.configuration()
-    values = {"python": sys.executable, "rules": config.rules(found)}
+    there = required(root, spec) or root
+    values = {
+        "python": sys.executable,
+        "rules": config.rules(found),
+        "requires": str(there if there == root else there.parent),
+    }
     line = shlex.split(str(spec[key]).format_map(values))
     wanted = spec.get("config")
     chosen = _config(root, wanted) if wanted else None
@@ -326,7 +348,8 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
     """The findings of the linters on ``paths`` of ``root``.
 
     ``paths`` are relative to ``root``; deleted, generated and guide files
-    are skipped. A linter whose ``requires`` file is missing is a problem.
+    are skipped. A linter that finds none of its ``requires`` files is a
+    problem.
     """
     present = sorted(engine.authored(root, paths))
     linters = config.linters(engine.use(root))
@@ -340,9 +363,12 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
         wanted = spec.get("config")
         if wanted and wanted.get("required") and not _config(root, wanted):
             continue  # ponytail: the tool cannot run without a configuration
-        if spec.get("requires") and not (root / spec["requires"]).exists():
+        if required(root, spec) is None:
+            wanted = spec["requires"]
+            listed = [wanted] if isinstance(wanted, str) else wanted
             result.problems.append(
-                f"{name} needs {spec['requires']}: {spec.get('missing', 'missing')}"
+                f"{name} needs {' or '.join(listed)}: "
+                f"{spec.get('missing', 'missing')}"
             )
             continue
         work[name] = selected

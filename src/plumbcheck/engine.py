@@ -65,7 +65,7 @@ LANGUAGE_FIELDS: Final = {
     "activates": str,
 }
 # A language applies to files with its extensions, or, by ``marker``, to every
-# repository that has its marker file (Verdog: ``project.json``).
+# repository that has its marker file.
 ACTIVATIONS: Final = ("extension", "marker")
 # The fields of an overlay table. ``checked_by`` names ``tool`` or
 # ``tool:check`` (a glob such as ``ruff:D*``), ``tool`` an alias of a linter;
@@ -822,12 +822,26 @@ def for_loop(
 
 
 def generated(root: Path) -> set[str]:
-    """The files of a Verdog project that its compiler generates."""
-    project_json = root / "project.json"
-    if not project_json.is_file():
+    """The generated files of ``root``, as its ``GENERATED`` lists them.
+
+    ``GENERATED`` names a JSON ``file`` of the repository, the ``list`` of
+    entries in it, the key of each entry's ``path`` and, in ``where``, the
+    values an entry must have; none by default.
+    """
+    spec = cast(dict[str, Any], config.load(root).get("GENERATED") or {})
+    manifest = root / str(spec.get("file", ""))
+    if not spec or not manifest.is_file():
         return set()
-    sources = json.loads(project_json.read_text()).get("sources", [])
-    return {s["path"] for s in sources if s.get("ownership") == "generated"}
+    entries = cast(
+        list[dict[str, Any]],
+        json.loads(manifest.read_text()).get(spec["list"], []),
+    )
+    where = cast(dict[str, Any], spec.get("where", {}))
+    return {
+        str(e[spec.get("path", "path")])
+        for e in entries
+        if all(e.get(k) == v for k, v in where.items())
+    }
 
 
 def authored(root: Path, changed: Iterable[str]) -> set[str]:

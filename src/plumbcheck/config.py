@@ -225,8 +225,10 @@ def linters(config: Config) -> dict[str, Config]:
         if enabled is not None and name not in enabled:
             continue
         arguments = config.get(f"{name}_ARGUMENTS", [])
+        setting = f"{name}_{spec.get('requires_key', 'REQUIRES')}"
         found[name] = {
             **spec,
+            "requires": config.get(setting, spec.get("requires")),
             "arguments": [arguments]
             if isinstance(arguments, str)
             else arguments,
