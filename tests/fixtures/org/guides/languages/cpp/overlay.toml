@@ -1,4 +1,0 @@
-["house/owners"]
-text = "Give every owning pointer an owner type."
-checked_by = ["clang-tidy:cppcoreguidelines-owning-memory"]
-priority = 1

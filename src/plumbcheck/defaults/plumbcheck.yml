@@ -4,17 +4,13 @@
 # override any key: later files win, mappings merge key by key, and the keys
 # CONFIG_PROPERTIES_TO_APPEND names append their lists instead, as in
 # MegaLinter (https://megalinter.io/latest/config-file/). Relative paths in
-# RULES, GUIDES and FILES resolve against the file that names them.
+# FILES resolve against the file that names them.
 #
 # Overrides, as in MegaLinter: ENABLE_LINTERS (only these), DISABLE_LINTERS,
 # FILTER_REGEX_EXCLUDE (a path regex for every linter) and, per linter,
 # <LINTER>_FILTER_REGEX_INCLUDE, <LINTER>_FILTER_REGEX_EXCLUDE and
 # <LINTER>_ARGUMENTS (appended to its command).
 
-# GUIDES: the folder of an organization's guides (languages/*/language.toml
-# and overlay.toml, sources.toml, metrics.toml) that `check`, `show` and
-# `index` read and lint reports cite; none by default.
-# RULES: a folder the linters' `list` commands may name as {rules}.
 # FILES: the base configurations `sync` writes into the repository's
 # .plumbcheck/ folder, such as `ruff.toml: rules/ruff.toml`: those under
 # `general` for every repository, those under a marker file (such as
@@ -31,82 +27,69 @@
 # defaults unless a configuration says otherwise.
 
 # One entry per linter. A linter checks the files with its `extensions`, or
-# every file for `language: general`; `language` names the language of the
-# guides whose guidelines its findings cite. `command` gets the files
-# appended ({python} is plumbcheck's interpreter, {rules} the RULES folder);
-# `fix`, if any, runs first with `lint --fix`. `config` passes the
-# repository's own file of that name, else the base in .plumbcheck/, else
-# none; with `required`, the linter skips a repository without one (the tool
-# cannot run without), and `merge: yaml` lays the repository's file over the
-# base (clang-tidy cannot extend another file). `output` parses the
-# findings: json-ruff, json-eslint, json-vale, json-gitleaks, json-j2lint or
-# regex:<pattern> (groups path, line, rule, message; `rule` names the rule
-# when the pattern has none). `ok` lists the exit codes that mean "ran";
-# `requires` is a file the linter needs, or a list of them of which the
-# first that exists counts ({requires} in `command` is its folder), and
-# `missing` says how to get it; <LINTER>_<requires_key> (default
-# <LINTER>_REQUIRES) replaces `requires`.
-# `aliases` are the names the guides' `checked_by` use; `list` prints the
-# checks the linter runs, for the coverage report. A linter without
-# `command` runs elsewhere (in the repository's own CI); it is listed so
-# guides may name it.
+# every file without any. `command` gets the files appended ({python} is
+# plumbcheck's interpreter); `fix`, if any, runs first with `lint --fix`.
+# `config` passes the repository's own file of that name, else the base in
+# .plumbcheck/, else none; with `required`, the linter skips a repository
+# without one (the tool cannot run without), and `merge: yaml` lays the
+# repository's file over the base (clang-tidy cannot extend another file).
+# `output` parses the findings: json-ruff, json-eslint, json-vale,
+# json-gitleaks, json-j2lint or regex:<pattern> (groups path, line, rule,
+# message; `rule` names the rule when the pattern has none). `ok` lists the
+# exit codes that mean "ran". `requires` is a file the linter needs, or a
+# list of them of which the first that exists counts ({requires} in
+# `command` is its folder), and `missing` says how to get it;
+# <LINTER>_<requires_key> (default <LINTER>_REQUIRES) replaces `requires`.
+# A finding links its rule's documentation: the URL the linter reports
+# (ruff), else `rule_link`, a template or templates by rule prefix ({rule};
+# {name}, the rule after the prefix or its group; {group}, the rule before
+# its first / or -), else `link`.
 LINTERS:
   PYTHON_RUFF:
-    language: python
     extensions: [.py]
-    aliases: [ruff, ruff-docstrings]
     link: https://docs.astral.sh/ruff/rules/
     command: ruff check --no-cache --force-exclude --output-format json
     fix: ruff check --no-cache --force-exclude --fix --exit-zero --quiet
     config: {file: ruff.toml, flag: --config}
     output: json-ruff
   PYTHON_RUFF_FORMAT:
-    language: python
     extensions: [.py]
-    aliases: [ruff-format]
     link: https://docs.astral.sh/ruff/formatter/
     command: ruff format --no-cache --force-exclude --check --output-format json
     fix: ruff format --no-cache --force-exclude --quiet
     config: {file: ruff.toml, flag: --config}
     output: json-ruff
   J2LINT:
-    language: jinja
     extensions: [.j2, .jinja, .jinja2]
-    aliases: [j2lint]
     link: https://github.com/aristanetworks/j2lint#rules
     command: j2lint --json
     output: json-j2lint
     ok: [0, 2]
   RST_DOC8:
-    language: rst
     extensions: [.rst]
-    aliases: [doc8]
     link: https://github.com/PyCQA/doc8
     command: doc8
     output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<rule>D\d+) (?P<message>.*)$'
   SPELL_VALE:
-    language: rst
     extensions: [.rst]
-    aliases: [vale]
     link: https://vale.sh/docs/
     command: vale --no-exit --output JSON
     config: {file: .vale.ini, flag: --config, required: true}
     output: json-vale
     ok: [0]
   SPELL_CODESPELL:
-    language: rst
     extensions: [.rst]
-    aliases: [codespell]
     link: https://github.com/codespell-project/codespell
     command: codespell
     output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<message>.*)$'
     rule: misspelling
     ok: [0, 65]
   TYPESCRIPT_ESLINT:
-    language: typescript
     extensions: [.ts, .tsx]
-    aliases: [eslint]
     link: https://eslint.org/docs/latest/rules/
+    rule_link:
+      "": https://eslint.org/docs/latest/rules/{rule}
+      "@typescript-eslint/": https://typescript-eslint.io/rules/{name}
     # ESLint 9 has no `unix` formatter.
     command: node_modules/.bin/eslint --format json
     fix: node_modules/.bin/eslint --fix
@@ -114,16 +97,12 @@ LINTERS:
     output: json-eslint
     requires: node_modules/.bin/eslint
     missing: run `npm ci` first
-  TYPESCRIPT_TSC:
-    language: typescript
-    aliases: [tsc]
-    link: https://www.typescriptlang.org/tsconfig/#strict
-    # Run by the repository's own checks, such as `npm run check`.
   CPP_CLANG_TIDY:
-    language: cpp
     extensions: [.cpp, .cc, .cxx, .hpp, .hh, .h, .tpp, .ipp]
-    aliases: [clang-tidy]
     link: https://clang.llvm.org/extra/clang-tidy/checks/list.html
+    rule_link:
+      "": https://clang.llvm.org/extra/clang-tidy/checks/{group}/{name}.html
+      clang-analyzer-: https://clang.llvm.org/extra/clang-tidy/checks/clang-analyzer/{name}.html
     command: clang-tidy -p {requires} --quiet
     config: {file: .clang-tidy, flag: --config-file, merge: yaml}
     output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'
@@ -132,10 +111,7 @@ LINTERS:
     requires: [build/plumbcheck/compile_commands.json, build/compile_commands.json]
     requires_key: COMPILE_COMMANDS
     missing: configure CMake with CMAKE_EXPORT_COMPILE_COMMANDS=ON
-    list: clang-tidy --list-checks
   REPOSITORY_GITLEAKS:
-    language: general
-    aliases: [gitleaks]
     link: https://github.com/gitleaks/gitleaks
     # One path per run; plumbcheck runs it per file.
     command: >-

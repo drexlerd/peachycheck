@@ -26,9 +26,6 @@ overriding only what it must.
   edit or one `lint` may span repositories.
 - **Finding-free.** Every finding fails; there is no baseline. On a pull
   request only the changed files count, on the default branch every file.
-- **Guides, optional.** An organization may point `GUIDES` at its style
-  guides; findings then cite the guideline their rule maps to (see
-  [Guides](#guides)).
 
 ## Install
 
@@ -138,12 +135,12 @@ PYTHON_RUFF_ARGUMENTS: [--preview]
   `CONFIG_PROPERTIES_TO_APPEND` names append their lists. `EXTENDS` takes a
   path or URL, or a list of them; a relative one resolves against the file
   that names it.
-- **Paths.** `RULES`, `GUIDES` and the sources of `FILES` are paths relative
-  to the file that names them. A file extended by its GitHub raw URL
+- **Paths.** The sources of `FILES` are paths relative to the file that
+  names them. A file extended by its GitHub raw URL
   (`https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>`) is read
   from a snapshot of that repository at that ref, cached in
   `~/.cache/plumbcheck/extends/`, so an organization's folders (rules, Vale
-  styles, guides) resolve too. Pin a commit or tag: a cached ref is never
+  styles) resolve too. Pin a commit or tag: a cached ref is never
   fetched again. Other URLs work for single files without relative paths.
 - **Selecting linters.** `ENABLE_LINTERS` (only these), `DISABLE_LINTERS`,
   `FILTER_REGEX_EXCLUDE` (a path regex for every linter) and, per linter,
@@ -159,8 +156,6 @@ PYTHON_RUFF_ARGUMENTS: [--preview]
 | `FILES` | under `general` or a marker file, the base files `sync` writes into `.plumbcheck/` |
 | `GENERATED` | the generated files `lint` skips, as a JSON manifest of the repository lists them |
 | `CPP_CLANG_TIDY_COMPILE_COMMANDS` | the repository's `compile_commands.json` (default: `build/plumbcheck/`, then `build/`) |
-| `RULES` | a folder the linters' `list` commands may name as `{rules}` |
-| `GUIDES` | the folder of the organization's guides (optional) |
 
 ### Base and overrides
 
@@ -249,62 +244,18 @@ that version. `PLUMBCHECK_HOOKS=off` turns them off;
 `plumbcheck hooks uninstall [--claude] [--codex]` removes exactly these
 entries.
 
-## Guides
+## Findings
 
-`GUIDES` points to a folder of an organization's style guides; plumbcheck
-ships none. Its layout:
-
-```text
-sources.toml                 # the guides: upstream, pin, sha256, license, parser
-metrics.toml                 # code metrics (optional)
-general/                     # language.toml, overlay.toml, tools.toml
-languages/<language>/
-  language.toml              # title, extensions, marker, test globs
-  overlay.toml               # the guidelines: rules of the guides and house rules
-  references/<guide>/        # the generated tree of a committed guide
-```
-
-`plumbcheck index` turns each pinned copy into a tree an agent reads
-top-down: an `index.md` per level with one line per child, one leaf per rule
-with the rule's complete text, and `index.toml` for scripts. A guide whose
-license allows no public copy (`store = "cache"`) is fetched and generated
-into `~/.cache/plumbcheck/` only. The parsers cover Markdown guides with
-numbered sections, HTML guides, the C++ Core Guidelines' rule anchors, the
-Google developer documentation site and Diátaxis.
-
-A language's `overlay.toml` maps rules to the linters that check them:
-
-```toml
-["some-guide/3.16"]
-checked_by = ["ruff:N*"]          # an alias of a linter, and a glob of its rules
-priority = 1                      # listed in an agent's prompt, lowest first
-
-["house/independent-tests"]       # a house rule: no guide states it
-text = "Keep tests independent."
-```
-
-`lint` then names each finding with the guidelines its rule maps to and the
-leaf that explains it:
+Each file's findings come with a link to the documentation of each rule:
 
 ```text
-a.py has 1 findings; fix each one and follow the guideline it breaks:
-  a.py:17: PYTHON_RUFF:N802 Function name `mixedCase` should be lowercase
-    - some-guide/3.16: 3.16 Naming: ... [checked by ruff N*] → .../3.16-naming.md
+a.py has 1 findings; fix each one:
+  a.py:17: PYTHON_RUFF:N802 Function name `mixedCase` should be lowercase → https://docs.astral.sh/ruff/rules/invalid-function-name
 ```
 
-```sh
-plumbcheck check                  # lint the guides: overlays, trees, metrics
-plumbcheck index [GUIDE...]       # generate the guides' trees
-plumbcheck show FILE...           # the guidelines that apply to files
-plumbcheck show --coverage        # rules with a checker vs. prose, and gaps
-plumbcheck show --html map.html   # the browsable map of the guides
-```
-
-`check` fails when a committed tree differs from what `index` generates and
-when a tracked file holds a cache-only guide or quotes its rules' titles.
-A tool such as an agent loop can use the engine as a library:
-`linting.lint_errors(root, base)` for its checks, and `engine.LAYERS`,
-`LOOPS` and `CHECKS` for its own metrics, retrievers and prompts.
+A tool such as an agent loop can use plumbcheck as a library:
+`linting.lint_errors(root, base)` returns these messages for the files
+changed since `base`.
 
 ## Develop
 
@@ -340,7 +291,4 @@ repository's settings (Environments).
 ## License
 
 plumbcheck is licensed under the GNU Affero General Public License v3.0 only
-(`AGPL-3.0-only`, see `LICENSE`). `graph.html` loads Cytoscape.js, elkjs and
-cytoscape-elk from a CDN when viewed; none is bundled. The sample guide in
-`tests/fixtures/org` was written for the tests and is dedicated to the
-public domain (CC0 1.0).
+(`AGPL-3.0-only`, see `LICENSE`).

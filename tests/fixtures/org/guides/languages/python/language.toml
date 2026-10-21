@@ -1,4 +1,0 @@
-title = "Python"
-extensions = [".py"]
-marker = "pyproject.toml"
-tests = ["tests/*", "test_*.py"]

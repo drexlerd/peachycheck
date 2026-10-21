@@ -6,8 +6,8 @@ merge key by key, and the keys ``CONFIG_PROPERTIES_TO_APPEND`` names append
 their lists, as in MegaLinter's configuration. A repository without a
 ``plumbcheck.yml`` gets the defaults.
 
-The paths in ``RULES``, ``GUIDES`` and ``FILES`` resolve against the file
-that names them. A file extended by its GitHub raw URL
+The paths in ``FILES`` resolve against the file that names them. A file
+extended by its GitHub raw URL
 (``https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>``) is read
 from a snapshot of its repository at that ref, so its folders resolve too.
 """
@@ -30,8 +30,6 @@ CACHE: Final = Path("~/.cache/plumbcheck/extends")
 DEFAULTS: Final = Path(__file__).parent / "defaults" / NAME
 # The folder ``sync`` writes the shared base configurations into.
 BASE: Final = ".plumbcheck"
-# The keys whose values are paths, relative to the file naming them.
-PATHS: Final = ("RULES", "GUIDES")
 GITHUB_RAW: Final = re.compile(
     r"https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)"
 )
@@ -104,9 +102,6 @@ def _located(entry: str, parent: str) -> str:
 def _anchored(data: Config, source: str) -> Config:
     """``data`` with its relative paths resolved against ``source``."""
     found = dict(data)
-    for key in PATHS:
-        if isinstance(found.get(key), str):
-            found[key] = _located(found[key], source)
     files = cast(dict[str, dict[str, str]], found.get("FILES") or {})
     found_files = {
         kind: {
@@ -154,11 +149,6 @@ def load(root: Path | None = None) -> Config:
     if own is None or not own.is_file():
         return defaults
     return merge(defaults, resolve(str(own)))
-
-
-def rules(found: Config) -> str:
-    """The ``RULES`` folder of a configuration, or "" without one."""
-    return str(found.get("RULES") or "")
 
 
 def rule_file(root: Path, name: str) -> Path | None:

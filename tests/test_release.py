@@ -211,28 +211,15 @@ def _members(dist: Path) -> dict[str, bytes]:
         }
 
 
-def test_no_package_contains_guides_or_an_organization_s_content(
+def test_no_package_contains_an_organization_s_content(
     dists: list[Path],
 ) -> None:
     assert sorted(d.suffix for d in dists) == [".gz", ".whl"]
     for dist in dists:
         members = _members(dist)
-        # The defaults and their rules ship.
+        # The defaults ship; the sample organization of the tests does not.
         assert any(n.endswith("defaults/plumbcheck.yml") for n in members)
-        # Only names: a failure must not print a guide's text.
-        found = [
-            name
-            for name, content in members.items()
-            if any(
-                part in name
-                for part in ("references/", "fixtures/", "overlay.toml")
-            )
-            or any(
-                text in content.decode(errors="ignore")
-                for text in ("CppCoreGuidelines", "isocpp")
-            )
-        ]
-        assert found == [], dist.name
+        assert not [n for n in members if "fixtures/" in n], dist.name
 
 
 def test_the_wheel_carries_the_license(dists: list[Path]) -> None:

@@ -1,10 +1,9 @@
 """``plumbcheck lint``: the linters of ``plumbcheck.yml`` on a repository.
 
 The files are the given ones, those changed since a base, or all; the
-files ``GENERATED`` lists are never checked. Each
-linter runs on the files of its extensions, and every finding fails. A
-finding names its linter and rule; the report adds the guidelines the rule
-maps to, with the leaf of each.
+files ``GENERATED`` lists are never checked. Each linter runs on the files
+of its extensions (every file without any), and every finding fails. A
+finding names its linter, its rule and the rule's documentation.
 """
 
 import hashlib
@@ -27,7 +26,7 @@ from typing import Any, Final, cast
 
 import yaml
 
-from plumbcheck import config, engine
+from plumbcheck import config
 
 BIN: Final = Path("~/.cache/plumbcheck/bin")
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
@@ -44,6 +43,7 @@ class Finding:
     linter: str
     rule: str
     message: str
+    link: str = ""  # the rule's documentation
 
 
 @dataclass
@@ -76,7 +76,7 @@ def changed_files(root: Path, base: str) -> list[str]:
     """The files changed since ``base``, untracked ones too, nothing staged."""
     changed = _git(root, "diff", "--name-only", base, "--")
     untracked = _git(root, "ls-files", "--others", "--exclude-standard")
-    return sorted(set(changed + untracked) - engine.generated(root))
+    return sorted(set(changed + untracked) - generated(root))
 
 
 def all_files(root: Path) -> list[str]:
@@ -88,28 +88,39 @@ def all_files(root: Path) -> list[str]:
     )
 
 
-def _extensions(
-    spec: dict[str, Any], standards: engine.Standards
-) -> tuple[str, ...]:
-    if "extensions" in spec:
-        return tuple(spec["extensions"])
-    language = standards.get(str(spec.get("language", "")))
-    return language.extensions if language else ()
-
-
-def _selected(
-    spec: dict[str, Any], paths: Iterable[str], standards: engine.Standards
-) -> list[str]:
+def _selected(spec: dict[str, Any], paths: Iterable[str]) -> list[str]:
     """The files of ``paths`` the linter ``spec`` checks."""
-    extensions = _extensions(spec, standards)
-    general = spec.get("language") == engine.GENERAL and not extensions
+    extensions = tuple(spec.get("extensions") or ())
     return [
         p
         for p in paths
-        if (general or p.endswith(extensions))
+        if (not extensions or p.endswith(extensions))
         and (not spec["include"] or re.search(spec["include"], p))
         and not any(re.search(r, p) for r in spec["exclude"])
     ]
+
+
+def generated(root: Path) -> set[str]:
+    """The generated files of ``root``, as its ``GENERATED`` lists them.
+
+    ``GENERATED`` names a JSON ``file`` of the repository, the ``list`` of
+    entries in it, the key of each entry's ``path`` and, in ``where``, the
+    values an entry must have; none by default.
+    """
+    spec = cast(dict[str, Any], config.load(root).get("GENERATED") or {})
+    manifest = root / str(spec.get("file", ""))
+    if not spec or not manifest.is_file():
+        return set()
+    entries = cast(
+        list[dict[str, Any]],
+        json.loads(manifest.read_text()).get(spec["list"], []),
+    )
+    where = cast(dict[str, Any], spec.get("where", {}))
+    return {
+        str(e[spec.get("path", "path")])
+        for e in entries
+        if all(e.get(k) == v for k, v in where.items())
+    }
 
 
 def _config(root: Path, wanted: dict[str, Any]) -> Path | None:
@@ -179,11 +190,9 @@ def _command(root: Path, spec: dict[str, Any], key: str) -> list[str]:
 
     ``{requires}`` is the folder of the file ``required`` found.
     """
-    found = engine.configuration()
     there = required(root, spec) or root
     values = {
         "python": sys.executable,
-        "rules": config.rules(found),
         "requires": str(there if there == root else there.parent),
     }
     line = shlex.split(str(spec[key]).format_map(values))
@@ -203,7 +212,7 @@ def _relative(root: Path, path: str) -> str:
         return ""
 
 
-type Raw = tuple[str, int, str, str]  # path, line, rule, message
+type Raw = tuple[str, int, str, str, str]  # path, line, rule, message, link
 
 
 def _ruff(text: str) -> list[Raw]:
@@ -214,6 +223,7 @@ def _ruff(text: str) -> list[Raw]:
             int(i["location"]["row"]),
             i["code"] or "syntax",
             i["message"],
+            i.get("url") or "",
         )
         for i in items
     ]
@@ -227,6 +237,7 @@ def _eslint(text: str) -> list[Raw]:
             int(m.get("line", 1)),
             m.get("ruleId") or "parse",
             m["message"],
+            "",
         )
         for f in files
         for m in cast(list[dict[str, Any]], f["messages"])
@@ -236,7 +247,7 @@ def _eslint(text: str) -> list[Raw]:
 def _vale(text: str) -> list[Raw]:
     files = cast(dict[str, list[dict[str, Any]]], json.loads(text or "{}"))
     return [
-        (path, int(a["Line"]), a["Check"], a["Message"])
+        (path, int(a["Line"]), a["Check"], a["Message"], "")
         for path, alerts in files.items()
         for a in alerts
     ]
@@ -245,7 +256,7 @@ def _vale(text: str) -> list[Raw]:
 def _j2lint(text: str) -> list[Raw]:
     found = cast(dict[str, list[dict[str, Any]]], json.loads(text or "{}"))
     return [
-        (e["filename"], int(e["line_number"]), e["id"], e["message"])
+        (e["filename"], int(e["line_number"]), e["id"], e["message"], "")
         for kind in ("ERRORS", "WARNINGS")
         for e in found.get(kind, [])
     ]
@@ -254,7 +265,7 @@ def _j2lint(text: str) -> list[Raw]:
 def _gitleaks(text: str) -> list[Raw]:
     leaks = cast(list[dict[str, Any]], json.loads(text or "[]"))
     return [
-        (s["File"], int(s["StartLine"]), s["RuleID"], s["Description"])
+        (s["File"], int(s["StartLine"]), s["RuleID"], s["Description"], "")
         for s in leaks
     ]
 
@@ -279,6 +290,7 @@ def parse(spec: dict[str, Any], text: str) -> list[Raw]:
             int(m.groupdict().get("line") or 1),
             m.groupdict().get("rule") or str(spec.get("rule", "")),
             m.groupdict().get("message") or str(spec.get("message", m[0])),
+            "",
         )
         for m in re.finditer(kind.removeprefix("regex:"), text, re.M)
     ]
@@ -317,9 +329,9 @@ def _run(
         )
     wanted = set(paths)
     found = [
-        Finding(path, line, name, rule, message.strip())
-        for path, line, rule, message in (
-            (_relative(root, p), n, r, m) for p, n, r, m in raw
+        Finding(path, line, name, rule, message.strip(), u or link(spec, rule))
+        for path, line, rule, message, u in (
+            (_relative(root, p), n, r, m, u) for p, n, r, m, u in raw
         )
         if path in wanted
     ]
@@ -350,17 +362,18 @@ def _fix(
 def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
     """The findings of the linters on ``paths`` of ``root``.
 
-    ``paths`` are relative to ``root``; deleted, generated and guide files
+    ``paths`` are relative to ``root``; deleted and generated files
     are skipped. A linter that finds none of its ``requires`` files is a
     problem.
     """
-    present = sorted(engine.authored(root, paths))
-    linters = config.linters(engine.use(root))
-    standards = engine.load()
+    present = sorted(
+        {p for p in paths if (root / p).is_file()} - generated(root)
+    )
+    linters = config.linters(config.load(root))
     result = Result()
     work: dict[str, list[str]] = {}
     for name, spec in linters.items():
-        selected = _selected(spec, present, standards)
+        selected = _selected(spec, present)
         if not selected:
             continue
         wanted = spec.get("config")
@@ -391,62 +404,52 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
     return result
 
 
-def _rules_of(
-    finding: Finding,
-    spec: dict[str, Any],
-    root: Path,
-    guidelines: Sequence[engine.Guideline],
-) -> list[str]:
-    """The index lines of the guidelines ``finding``'s rule maps to."""
-    aliases = spec.get("aliases", [finding.linter])
-    mapped = [
-        g
-        for g in guidelines
-        if any(
-            engine.matches(e, alias, finding.rule)
-            for e in g.checked_by
-            for alias in aliases
-        )
-    ]
-    link = spec.get("link", finding.linter)
-    if not mapped and engine.instance() is None:
-        return [f"- see {link}"]
-    if not mapped:
-        what = f"{aliases[0]} {finding.rule}".strip()
-        return [f"- no guideline maps {what}; see {link}"]
-    return [engine.rule_line(g, root) for g in mapped]
+def link(spec: dict[str, Any], rule: str) -> str:
+    """The documentation of ``rule``: the linter's ``rule_link``, else ``link``.
+
+    ``rule_link`` is a template, or templates by rule prefix (the longest
+    that matches wins). ``{rule}`` is the rule; ``{name}`` the rule after a
+    matched prefix, else after its group; ``{group}`` the rule before its
+    first ``/`` or, without one, its first ``-``.
+    """
+    templates: Any = spec.get("rule_link") or {}
+    if isinstance(templates, str):
+        templates = {"": templates}
+    found = cast(dict[str, str], templates)
+    rule = rule.split(",")[0]  # clang-tidy names a check's aliases too
+    prefix = max(
+        (p for p in found if rule.startswith(p)), key=len, default=None
+    )
+    if prefix is None or not rule:
+        return str(spec.get("link", ""))
+    group, _, name = rule.partition("/" if "/" in rule else "-")
+    if prefix:
+        name = rule.removeprefix(prefix)
+    return found[prefix].format(rule=rule, group=group, name=name)
 
 
 def repair(
-    root: Path, path: str, found: Sequence[Finding], limit: int = SHOWN_FINDINGS
+    path: str, found: Sequence[Finding], limit: int = SHOWN_FINDINGS
 ) -> str:
-    """A file's repair message: its findings, each with its guidelines."""
-    specs = cast(dict[str, dict[str, Any]], engine.use(root).get("LINTERS", {}))
-    guidelines = [g for lang in engine.load().values() for g in lang.guidelines]
-    lines = [
-        f"{path} has {len(found)} findings; fix each one and follow the "
-        "guideline it breaks:"
-    ]
+    """A file's repair message: its findings, each with its documentation."""
+    lines = [f"{path} has {len(found)} findings; fix each one:"]
     for f in found[:limit]:
-        lines.append(f"  {f.path}:{f.line}: {f.linter}:{f.rule} {f.message}")
-        lines += [
-            f"    {line}"
-            for line in _rules_of(f, specs.get(f.linter, {}), root, guidelines)
-        ]
+        where = f" → {f.link}" if f.link else ""
+        lines.append(
+            f"  {f.path}:{f.line}: {f.linter}:{f.rule} {f.message}{where}"
+        )
     if len(found) > limit:
         lines.append(f"  ... and {len(found) - limit} more")
     return "\n".join(lines)
 
 
-def report(
-    root: Path, result: Result, limit: int = SHOWN_FINDINGS
-) -> list[str]:
+def report(result: Result, limit: int = SHOWN_FINDINGS) -> list[str]:
     """The problems, then one repair message per file with findings."""
     by_file: dict[str, list[Finding]] = {}
     for f in result.findings:
         by_file.setdefault(f.path, []).append(f)
     return result.problems + [
-        repair(root, path, found, limit) for path, found in by_file.items()
+        repair(path, found, limit) for path, found in by_file.items()
     ]
 
 
@@ -466,7 +469,7 @@ def lint_files(
 
 def lint_errors(root: Path, base: str) -> list[str]:
     """The repair messages of the files changed since ``base``; [] if clean."""
-    return report(root, lint(root, changed_files(root, base)))
+    return report(lint(root, changed_files(root, base)))
 
 
 def install(versions: dict[str, dict[str, str]]) -> list[str]:

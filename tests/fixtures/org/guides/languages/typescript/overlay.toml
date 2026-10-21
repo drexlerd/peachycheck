@@ -1,8 +1,0 @@
-["house/declarations"]
-text = "Declare with const or let, never var."
-checked_by = ["eslint:no-var"]
-priority = 1
-
-["house/types"]
-text = "Type-check in strict mode."
-checked_by = ["tsc"]

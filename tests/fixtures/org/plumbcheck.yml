@@ -1,8 +1,6 @@
-# A sample organization: its guides and its base configurations, which
-# `plumbcheck sync` writes into a repository's .plumbcheck/. Relative paths
-# resolve against this file.
-GUIDES: guides
-RULES: rules
+# A sample organization: its base configurations, which `plumbcheck sync`
+# writes into a repository's .plumbcheck/. Relative paths resolve against
+# this file.
 FILES:
   general:
     ruff.toml: rules/ruff.toml

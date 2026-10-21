@@ -1,4 +1,4 @@
-"""The command line ``plumbcheck``: lint, check, show and sync.
+"""The command line ``plumbcheck``: lint, sync and the agents' hooks.
 
 ``FILES`` of a repository's ``plumbcheck.yml`` names the tool configurations
 it shares: those of ``general`` with every repository, the others with each
@@ -23,8 +23,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Final, cast
 
-from plumbcheck import config, engine, hooks, linting, sources
-from plumbcheck.engine import GENERAL
+from plumbcheck import config, hooks, linting
 
 PACKAGE = "plumbcheck"
 WORKFLOW = """name: plumbcheck
@@ -45,6 +44,8 @@ USES = re.compile(
     r"(drexlerd/plumbcheck(?:/\.github/workflows/check\.yml)?@)[^\s#]+"
 )
 PIN = re.compile(r"^PLUMBCHECK_VERSION:.*$", re.M)
+GENERAL: Final = "general"  # the FILES of every repository
+MAIN_BRANCH: str = ""  # empty: the remote's default branch (origin/HEAD)
 
 
 def version() -> str:
@@ -63,7 +64,7 @@ def released() -> bool:
 
 
 def _commit() -> str:
-    """The commit of plumbcheck this engine was installed from."""
+    """The commit of plumbcheck this was installed from."""
     try:
         found = importlib.metadata.distribution(PACKAGE)
         direct = json.loads(found.read_text("direct_url.json") or "{}")
@@ -196,7 +197,7 @@ def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
         What was done, or "" when ``root`` is no Python project.
     """
     pyproject = root / "pyproject.toml"
-    if not pyproject.is_file() or "pyproject.toml" in engine.generated(root):
+    if not pyproject.is_file() or "pyproject.toml" in linting.generated(root):
         return ""
     if wanted is None:
         return "pyproject.toml: no dev pin, not installed from PyPI" * add
@@ -306,8 +307,8 @@ def base_of(root: Path) -> str:
     many clones lack, else ``origin/main``.
     """
     branches = (
-        [f"origin/{engine.MAIN_BRANCH}"]
-        if engine.MAIN_BRANCH
+        [f"origin/{MAIN_BRANCH}"]
+        if MAIN_BRANCH
         else ["origin/HEAD", "origin/main"]
     )
     for branch in branches:
@@ -331,41 +332,6 @@ def base_of(root: Path) -> str:
     return "HEAD~1" if previous.returncode == 0 else EMPTY_TREE
 
 
-def check() -> int:
-    """Lint the instance and its metrics."""
-    if engine.instance() is None:
-        print(f"no GUIDES in {config.NAME}; nothing to check")
-        return 0
-    standards = engine.load()
-    for finding in engine.coherence(engine.graph()):
-        print(f"warning ({finding.rule}): {finding.message}")
-    errors = engine.lint_all() + engine.metric_tool_errors()
-    errors += engine.source_errors()
-    for extra in engine.CHECKS:
-        errors += extra()
-    print("\n".join(errors) or f"{len(standards)} standards, no problems.")
-    return 1 if errors else 0
-
-
-def index(names: Sequence[str]) -> int:
-    """Generate the trees of the guides ``names``, or of every guide."""
-    known = engine.guides()
-    unknown = sorted(set(names) - set(known))
-    if unknown:
-        print(f"unknown guides: {', '.join(unknown)}")
-        return 1
-    for source in (known[n] for n in names or known):
-        rules = engine.generate(source)
-        leaves = [r for r in rules if r.leaf]
-        checked = sum(bool(r.checked_by) for r in leaves)
-        print(
-            f"{source.id}: {len(leaves)} rules ({checked} checked, "
-            f"{len(leaves) - checked} prose) in {len(rules) - len(leaves)} "
-            f"sections, depth {sources.depth(rules)}, store {source.store}"
-        )
-    return 0
-
-
 def lint(root: Path, options: argparse.Namespace) -> int:
     """Lint the given files, those changed since ``--base``, or ``--all``.
 
@@ -387,7 +353,7 @@ def lint(root: Path, options: argparse.Namespace) -> int:
             result.findings = [
                 replace(f, path=f"{prefix}/{f.path}") for f in result.findings
             ]
-        messages += linting.report(repo, result, limit=10**9)
+        messages += linting.report(result, limit=10**9)
     print("\n".join(messages) or f"{len(paths)} files, no findings")
     return 1 if messages else 0
 
@@ -415,20 +381,6 @@ def install_hooks(options: argparse.Namespace) -> int:
     return 0
 
 
-def show(root: Path, files: Sequence[str]) -> int:
-    """What applies to ``files``, or the overview of every language."""
-    standards = engine.load()
-    if not files:
-        print(engine.overview(standards))
-        return 0
-    paths = [str(Path(f).resolve().relative_to(root)) for f in files]
-    for activation in engine.select(standards, paths, root):
-        print(f"{activation.language}: {'; '.join(activation.reasons)}")
-        for guideline in activation.guidelines:
-            print(f"  {guideline['key']}: {guideline['text']}")
-    return 0
-
-
 def parser() -> argparse.ArgumentParser:
     """The command line; a consumer may add arguments before parsing."""
     result = argparse.ArgumentParser(prog="plumbcheck")
@@ -437,7 +389,6 @@ def parser() -> argparse.ArgumentParser:
         "--version", action="version", version=f"%(prog)s {version()}"
     )
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("check", help="lint the guides of GUIDES")
     commands.add_parser("install", help="download the pinned linters")
     linted = commands.add_parser("lint", help="run the linters")
     linted.add_argument("files", nargs="*")
@@ -454,20 +405,6 @@ def parser() -> argparse.ArgumentParser:
     installing.add_argument("action", choices=["install", "uninstall"])
     installing.add_argument("--claude", action="store_true")
     installing.add_argument("--codex", action="store_true")
-    showing = commands.add_parser("show", help="what applies to files, or all")
-    showing.add_argument("files", nargs="*")
-    showing.add_argument(
-        "--html", type=Path, help="write the browsable map here"
-    )
-    showing.add_argument(
-        "--coverage",
-        action="store_true",
-        help="rules with a checker vs. prose, per guide and section",
-    )
-    indexing = commands.add_parser(
-        "index", help="generate the guides' trees from their pinned sources"
-    )
-    indexing.add_argument("guides", nargs="*", help="default: every guide")
     syncing = commands.add_parser("sync", help="write the shared tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
     initializing = commands.add_parser(
@@ -490,35 +427,18 @@ def _sync(root: Path, check_only: bool) -> int:
     return 1 if differing and check_only else 0
 
 
-def _show(root: Path, options: argparse.Namespace) -> int:
-    if options.coverage:
-        print(engine.coverage(), end="")
-        return 0
-    if options.html is None:
-        return show(root, options.files)
-    page = engine.graph_page(engine.graph(), root.name)
-    options.html.write_text(f"{engine.PAGE_FRAME}\n{page}")
-    print(options.html)
-    return 0
-
-
 def main(arguments: Sequence[str] | None = None) -> int:
     """Run one command of ``plumbcheck``."""
     options = parser().parse_args(arguments)
     root: Path = options.root.resolve()
-    if options.command in ("check", "show", "index"):
-        engine.use(root)
     commands: dict[str, Callable[[], int]] = {
-        "check": check,
         "install": lambda: install(root),
         "lint": lambda: lint(root, options),
         "hook": lambda: hooks.run(options.event),
         "hooks": lambda: install_hooks(options),
-        "index": lambda: index(options.guides),
         "sync": lambda: _sync(root, options.check),
         "init": lambda: init(root, options.extends),
         "upgrade": lambda: upgrade(root, options.to),
-        "show": lambda: _show(root, options),
     }
     return commands[options.command]()
 

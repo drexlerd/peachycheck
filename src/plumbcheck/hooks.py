@@ -96,9 +96,7 @@ def post_edit(payload: dict[str, Any]) -> Reply:
     messages: list[str] = []
     for root, paths in _edited_roots(payload).items():
         found = linting.lint(root, paths, fix=True)
-        messages += _shown(
-            root, where, linting.report(root, found, EDIT_FINDINGS)
-        )
+        messages += _shown(root, where, linting.report(found, EDIT_FINDINGS))
     return Reply(2, stderr="\n".join(messages)) if messages else Reply()
 
 

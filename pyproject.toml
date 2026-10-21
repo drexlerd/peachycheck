@@ -1,7 +1,7 @@
 [project]
 name = "plumbcheck"
 version = "0.1.0"
-description = "Native linters, project checks and agent hooks from one plumbcheck.yml per repository"
+description = "Native linters and agent hooks from one plumbcheck.yml per repository"
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]

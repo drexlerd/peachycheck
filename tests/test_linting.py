@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 import yaml
 
-from plumbcheck import cli, config, engine, hooks, linting
+from plumbcheck import cli, config, hooks, linting
 
 ORG = Path(__file__).parent / "fixtures" / "org"
 
@@ -139,9 +139,10 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     fetched: list[str] = []
     data = _archive(
         {
-            "plumbcheck.yml": "EXTENDS: base.yml\nRULES: rules\nFILES:\n"
+            "plumbcheck.yml": "EXTENDS: base.yml\nFILES:\n"
             "  pyproject.toml: {ruff.toml: rules/ruff.toml, vale: rules/vale}\n",
-            "base.yml": "GUIDES: guides\n",
+            "base.yml": "FILES: {general: {.vale.ini: rules/.vale.ini}}\n",
+            "rules/.vale.ini": "StylesPath = vale\n",
             "rules/ruff.toml": "line-length = 70\n",
             "rules/vale/A/B.yml": "extends: existence\n",
         }
@@ -156,8 +157,9 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     _write(tmp_path / config.NAME, f"EXTENDS: {url}\n")
     loaded = config.load(tmp_path)
     snapshot = tmp_path / "home/.cache/plumbcheck/extends/o/org/abc"
-    assert loaded["RULES"] == str(snapshot / "rules")
-    assert loaded["GUIDES"] == str(snapshot / "guides")
+    assert loaded["FILES"]["general"][".vale.ini"] == str(
+        snapshot / "rules/.vale.ini"
+    )
     assert loaded["FILES"]["pyproject.toml"]["ruff.toml"] == str(
         snapshot / "rules/ruff.toml"
     )
@@ -165,6 +167,7 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     (tmp_path / "uv.lock").write_text("")
     # A folder brings every file below it.
     assert cli.sync(tmp_path, check=False) == [
+        ".plumbcheck/.vale.ini",
         ".plumbcheck/ruff.toml",
         ".plumbcheck/vale/A/B.yml",
     ]
@@ -181,11 +184,8 @@ def test_a_repository_without_its_own_file_gets_the_defaults(
     found = config.load(tmp_path)
     linters = config.linters(found)
     assert "PYTHON_RUFF" in linters and "CPP_CLANG_TIDY" in linters
-    # Run by the project's commands, not by ``lint``.
-    assert "TYPESCRIPT_TSC" not in linters
-    # No opinions: no base configurations, no guides.
-    assert config.rules(found) == "" and "FILES" not in found
-    assert "GUIDES" not in found
+    # No opinions: no base configurations.
+    assert "FILES" not in found
 
 
 def test_overrides_enable_disable_filter_and_add_arguments() -> None:
@@ -225,16 +225,16 @@ def test_each_output_kind_parses_path_line_rule_and_message() -> None:
         "/r/a.cpp:2:12: note: here\n"
     )
     assert linting.parse({"output": "json-ruff"}, ruff) == [
-        ("/r/a.py", 3, "F401", "unused")
+        ("/r/a.py", 3, "F401", "unused", "")
     ]
     assert linting.parse({"output": "json-eslint"}, eslint) == [
-        ("/r/a.ts", 2, "no-var", "var")
+        ("/r/a.ts", 2, "no-var", "var", "")
     ]
     assert linting.parse({"output": "json-vale"}, vale) == [
-        ("a.rst", 4, "Google.Will", "will")
+        ("a.rst", 4, "Google.Will", "will", "")
     ]
     assert linting.parse({"output": "json-gitleaks"}, leaks) == [
-        ("a.txt", 1, "generic-api-key", "key")
+        ("a.txt", 1, "generic-api-key", "key", "")
     ]
     specs = config.load()["LINTERS"]
     assert linting.parse(specs["CPP_CLANG_TIDY"], tidy) == [
@@ -243,14 +243,79 @@ def test_each_output_kind_parses_path_line_rule_and_message() -> None:
             2,
             "cppcoreguidelines-owning-memory",
             "initializing non-owner",
+            "",
         )
     ]
     assert linting.parse(
         specs["SPELL_CODESPELL"], "a.rst:1: teh ==> the\n"
-    ) == [("a.rst", 1, "misspelling", "teh ==> the")]
+    ) == [("a.rst", 1, "misspelling", "teh ==> the", "")]
+
+
+# --- links
+
+
+def test_a_rule_links_its_documentation_by_template_and_prefix() -> None:
+    linters = config.load()["LINTERS"]
+    tidy, eslint = linters["CPP_CLANG_TIDY"], linters["TYPESCRIPT_ESLINT"]
+    checks = "https://clang.llvm.org/extra/clang-tidy/checks/"
+    assert linting.link(tidy, "bugprone-use-after-move,hicpp-x") == (
+        f"{checks}bugprone/use-after-move.html"
+    )
+    assert linting.link(tidy, "clang-analyzer-core.NullDereference") == (
+        f"{checks}clang-analyzer/core.NullDereference.html"
+    )
+    assert linting.link(eslint, "@typescript-eslint/no-unused-vars") == (
+        "https://typescript-eslint.io/rules/no-unused-vars"
+    )
+    gitleaks = linters["REPOSITORY_GITLEAKS"]
+    assert linting.link(gitleaks, "generic-api-key") == gitleaks["link"]
 
 
 # --- file selection
+
+
+def test_the_base_of_general_and_of_the_markers_present_is_synced(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("")
+    # Without a plumbcheck.yml, no base: plumbcheck has no opinions.
+    assert cli.sync(tmp_path, check=True) == []
+    # The organization's base lands in .plumbcheck/: general and per type.
+    _write(tmp_path / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
+    written = [
+        ".plumbcheck/.clang-tidy",
+        ".plumbcheck/.vale.ini",
+        ".plumbcheck/pyrightconfig.json",
+        ".plumbcheck/ruff.toml",
+    ]
+    assert cli.sync(tmp_path, check=True) == written
+    assert cli.sync(tmp_path, check=False) == written
+    assert cli.sync(tmp_path, check=True) == []
+    assert (tmp_path / ".plumbcheck/ruff.toml").read_text() == (
+        (ORG / "rules" / "ruff.toml").read_text()
+    )
+    # Only the folder counts: a stale or changed file differs.
+    (tmp_path / ".plumbcheck/old.toml").write_text("")
+    (tmp_path / ".plumbcheck/ruff.toml").write_text("line-length = 120\n")
+    assert cli.main(["--root", str(tmp_path), "sync", "--check"]) == 1
+    assert cli.sync(tmp_path, check=False) == [
+        ".plumbcheck/old.toml",
+        ".plumbcheck/ruff.toml",
+    ]
+    assert not (tmp_path / ".plumbcheck/old.toml").exists()
+    # What git ignores there, such as a tool's cache, does not count.
+    _git(tmp_path, "init", "-q")
+    _write(tmp_path / ".plumbcheck/.ruff_cache/.gitignore", "*\n")
+    _write(tmp_path / ".plumbcheck/.ruff_cache/x", "")
+    assert cli.sync(tmp_path, check=True) == []
+    # The repository's own configurations inherit the base.
+    assert cli.inherit(tmp_path) == ["ruff.toml", "pyrightconfig.json"]
+    assert (tmp_path / "ruff.toml").read_text() == cli.INHERIT["ruff.toml"]
+    assert cli.inherit(tmp_path) == []
+    assert cli.sync(tmp_path, check=True) == []
+    # Without the marker, its files go.
+    (tmp_path / "pyproject.toml").unlink()
+    assert cli.sync(tmp_path, check=True) == [".plumbcheck/pyrightconfig.json"]
 
 
 def test_changed_files_are_modified_and_new_ones_and_nothing_is_staged(
@@ -283,9 +348,9 @@ def test_every_finding_of_a_checked_file_counts(tmp_path: Path) -> None:
         if p == "legacy.py"
     }
     (error,) = linting.lint_errors(root, base)
-    assert error.startswith("new.py has 2 findings;")
+    assert error.startswith("new.py has 2 findings; fix each one:")
     assert "  new.py:17: PYTHON_RUFF:N802 Function name" in error
-    assert "    - sample-style/1.1: 1.1 Names: Name functions" in error
+    assert "→ https://docs.astral.sh/ruff/rules/invalid-function-name" in error
 
 
 def test_generated_deleted_and_test_files_need_no_docstrings(
@@ -312,7 +377,6 @@ def test_a_linter_s_config_is_the_repository_s_the_base_or_none(
     tmp_path: Path,
 ) -> None:
     root, _ = _repository(tmp_path, {})
-    engine.use(root)
 
     def flags(name: str) -> list[str]:
         spec: dict[str, Any] = {"command": "x", "arguments": []}
@@ -369,7 +433,6 @@ def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
         "build/compile_commands.json: configure CMake with "
         "CMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
-    engine.use(root)
     spec = config.linters(config.load(root))["CPP_CLANG_TIDY"]
     _write(root / "build/compile_commands.json", "[]")
     assert linting._command(root, spec, "command")[:3] == [  # pyright: ignore[reportPrivateUsage]
@@ -385,17 +448,6 @@ def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
         "CPP_CLANG_TIDY needs out/compile_commands.json: configure CMake "
         "with CMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
-
-
-def test_an_unmapped_rule_names_the_linter_s_documentation(
-    tmp_path: Path,
-) -> None:
-    root, _ = _repository(tmp_path, {"a.py": "import os\n"})
-    (error,) = linting.report(root, linting.lint(root, ["a.py"]))
-    assert (
-        "    - no guideline maps ruff F401; see https://docs.astral.sh/ruff/rules/"
-        in error.splitlines()
-    )
 
 
 def test_lint_fixes_first_and_fails_on_what_remains(
@@ -416,18 +468,17 @@ def test_lint_fixes_first_and_fails_on_what_remains(
 
 # Reversed, so this file itself leaks nothing.
 _LEAK = "vA0jG5sF1dH6cN4bY7rX2wP9mLk3Tv8qZ"[::-1]
-# A violation per linter, inline; its finding must map to a guideline unless
-# no guideline names the linter (the formatter).
+# A violation per linter, inline, and the start of the link its finding gets.
 FIRES = [
-    ("PYTHON_RUFF", "a.py", VIOLATION, True),
-    ("PYTHON_RUFF_FORMAT", "a.py", CLEAN.replace("left + right", "left+right"), False),
-    ("J2LINT", "a.j2", "{% if a %}{% if b %}\nx\n{% endif %}{% endif %}\n", True),
-    ("RST_DOC8", "a.rst", "The gate measures the change.   \n", True),
-    ("SPELL_VALE", "a.rst", "The gate is is ready.\n", True),
-    ("SPELL_CODESPELL", "a.rst", "The gate measures teh change.\n", True),
-    ("TYPESCRIPT_ESLINT", "a.ts", "var count = 1;\nexport const same = count;\n", True),
-    ("CPP_CLANG_TIDY", "a.cpp", "struct N {};\nN* make() { return new N; }\n", True),
-    ("REPOSITORY_GITLEAKS", "a.txt", f'api_key = "{_LEAK}"\n', True),
+    ("PYTHON_RUFF", "a.py", VIOLATION, "https://docs.astral.sh/ruff/rules/"),
+    ("PYTHON_RUFF_FORMAT", "a.py", CLEAN.replace("left + right", "left+right"), "https://docs.astral.sh/ruff/"),
+    ("J2LINT", "a.j2", "{% if a %}{% if b %}\nx\n{% endif %}{% endif %}\n", "https://github.com/aristanetworks/j2lint"),
+    ("RST_DOC8", "a.rst", "The gate measures the change.   \n", "https://github.com/PyCQA/doc8"),
+    ("SPELL_VALE", "a.rst", "The gate is is ready.\n", "https://vale.sh/"),
+    ("SPELL_CODESPELL", "a.rst", "The gate measures teh change.\n", "https://github.com/codespell-project/"),
+    ("TYPESCRIPT_ESLINT", "a.ts", "var count = 1;\nexport const same = count;\n", "https://eslint.org/docs/latest/rules/no-var"),
+    ("CPP_CLANG_TIDY", "a.cpp", "struct N {};\nN* make() { return new N; }\n", "https://clang.llvm.org/extra/clang-tidy/checks/cppcoreguidelines/owning-memory.html"),
+    ("REPOSITORY_GITLEAKS", "a.txt", f'api_key = "{_LEAK}"\n', "https://github.com/gitleaks/"),
 ]  # fmt: skip
 ESLINT_CONFIG = """import tseslint from 'typescript-eslint';
 export default tseslint.config({
@@ -460,16 +511,16 @@ def node_modules(tmp_path_factory: pytest.TempPathFactory) -> Path | None:
     return folder / "node_modules"
 
 
-@pytest.mark.parametrize(("linter", "name", "text", "mapped"), FIRES)
-def test_each_linter_flags_a_violation_its_guidelines_map(
+@pytest.mark.parametrize(("linter", "name", "text", "link"), FIRES)
+def test_each_linter_flags_a_violation_and_links_its_rule(
     tmp_path: Path,
     node_modules: Path | None,
     linter: str,
     name: str,
     text: str,
-    mapped: bool,
+    link: str,
 ) -> None:
-    """The real linter runs, its output parses and a guideline maps it.
+    """The real linter runs, its output parses and the finding links its rule.
 
     A missing linter skips, unless ``REQUIRE_CHECKERS`` is set (the instance
     job of CI installs them all).
@@ -479,7 +530,7 @@ def test_each_linter_flags_a_violation_its_guidelines_map(
         (root / "node_modules").symlink_to(node_modules)
         _write(root / "eslint.config.mjs", ESLINT_CONFIG)
     _write(
-        root / "build" / "standards" / "compile_commands.json",
+        root / "build" / "plumbcheck" / "compile_commands.json",
         json.dumps(
             [
                 {
@@ -497,16 +548,7 @@ def test_each_linter_flags_a_violation_its_guidelines_map(
         pytest.skip("; ".join(found.problems))
     mine = [f for f in found.findings if f.linter == linter]
     assert mine, found.findings
-    if mapped:
-        spec: dict[str, Any] = config.load()["LINTERS"][linter]
-        assert any(
-            engine.matches(entry, alias, f.rule)
-            for f in mine
-            for language in engine.load().values()
-            for g in language.guidelines
-            for entry in g.checked_by
-            for alias in spec["aliases"]
-        ), mine
+    assert any(f.link.startswith(link) for f in mine), mine
 
 
 def test_the_base_is_the_merge_base_with_origin_main_without_origin_head(
@@ -519,7 +561,7 @@ def test_the_base_is_the_merge_base_with_origin_main_without_origin_head(
     assert cli.base_of(root) == base
 
 
-def test_a_complex_function_cites_the_function_length_rule(
+def test_a_complex_function_is_a_finding(
     tmp_path: Path,
 ) -> None:
     branches = "".join(
@@ -530,7 +572,6 @@ def test_a_complex_function_cites_the_function_length_rule(
     _write(root / "a.py", CLEAN + complex_)
     (error,) = linting.lint_errors(root, base)
     assert "PYTHON_RUFF:C901" in error
-    assert "sample-style/1.2" in error
 
 
 # --- hooks
@@ -723,14 +764,6 @@ def test_a_failing_hook_reports_without_blocking(
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert hooks.run("stop") == 1
     assert "boom" in capsys.readouterr().err
-
-
-def test_without_guides_a_finding_names_the_linter_s_documentation(
-    tmp_path: Path,
-) -> None:
-    root, _ = _repository(tmp_path, {"a.py": "import os\n"}, configured=False)
-    (error,) = linting.report(root, linting.lint(root, ["a.py"]))
-    assert "    - see https://docs.astral.sh/ruff/rules/" in error.splitlines()
 
 
 def _sibling(parent: Path, name: str, ruff: str) -> Path:

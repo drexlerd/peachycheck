@@ -49,7 +49,7 @@ jobs:
           uv venv /tmp/wheel
           uv pip install --python /tmp/wheel/bin/python dist/*.whl
           /tmp/wheel/bin/plumbcheck --version
-          /tmp/wheel/bin/plumbcheck --root tests/fixtures/org check
+          /tmp/wheel/bin/plumbcheck lint --all
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:

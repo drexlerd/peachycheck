@@ -1,4 +1,0 @@
-title = "Example"
-# Applies to every repository with this marker, whatever files a task changes.
-marker = "example.json"
-activates = "marker"

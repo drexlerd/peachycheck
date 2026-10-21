@@ -1,1 +1,1 @@
-"""The organization's standards: the engine and the ``plumbcheck`` CLI."""
+"""plumbcheck: native linters and agent hooks from one plumbcheck.yml."""
