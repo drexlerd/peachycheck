@@ -1,4 +1,4 @@
-name: Self
+name: CI
 
 on:
   pull_request:
@@ -9,11 +9,13 @@ permissions:
   contents: read
 
 jobs:
-  standards:
+  # plumbcheck checks itself with the commit under test.
+  plumbcheck:
     uses: ./.github/workflows/check.yml
     with:
-      ref: ${{ github.event.pull_request.head.sha || github.sha }}
-  instance:
+      version: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Every linter runs on a fixture and its finding parses.
+  linters:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,10 +28,10 @@ jobs:
         with:
           node-version: 22
       - run: uv sync --locked
-      - run: uv run --no-sync verdog-standards install
-      - run: uv run --no-sync verdog-standards check
-      - run: uv run --no-sync verdog-standards lint --all
-      # Each linter flags an inline fixture; none may be missing.
+      - run: uv run --no-sync plumbcheck install
+      - run: uv run --no-sync plumbcheck --root tests/fixtures/org check
       - run: uv run --no-sync pytest -q tests/test_linting.py -k each_linter_flags
         env:
           REQUIRE_CHECKERS: "1"
+      - name: The packages hold no guides or organization content
+        run: uv run --no-sync pytest -q tests/test_release.py

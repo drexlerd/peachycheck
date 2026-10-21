@@ -1,7 +1,7 @@
-"""``python -m verdog_standards``."""
+"""``python -m plumbcheck``."""
 
 import sys
 
-from verdog_standards.cli import main
+from plumbcheck.cli import main
 
 sys.exit(main())

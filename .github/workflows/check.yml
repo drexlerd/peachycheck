@@ -1,25 +1,29 @@
-# The organization's one check. A repository calls it with three lines:
+# plumbcheck's check of a repository. A repository calls it with:
 #
 #   jobs:
-#     standards:
-#       uses: verdog-ai/standards/.github/workflows/check.yml@main
+#     plumbcheck:
+#       uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0
 #
 # A repository with private submodules or private sibling repositories adds
 # `secrets: inherit` and needs a SUBMODULES_TOKEN secret that can read them.
 #
-# It recognises the repository's types, requires the shared tool
-# configurations, runs the types' commands and the linters of standards.yml:
-# on a pull request every finding in a changed file fails, on a push to the
-# default branch every finding in the repository.
-name: Standards
+# It installs plumbcheck (the `version` input, else PLUMBCHECK_VERSION of the
+# repository's plumbcheck.yml, else the latest commit), recognises the
+# repository's types, requires the shared tool configurations, runs the
+# types' commands and the linters: on a pull request every finding in a
+# changed file fails, on a push to the default branch every finding.
+name: plumbcheck
 
 on:
   workflow_call:
     inputs:
-      ref:
-        description: The ref of verdog-ai/standards to check against.
+      version:
+        description: >-
+          The plumbcheck to install: a release such as 0.1.0 (from PyPI) or a
+          git ref of drexlerd/plumbcheck. Default: PLUMBCHECK_VERSION of
+          plumbcheck.yml.
         type: string
-        default: main
+        default: ""
     secrets:
       SUBMODULES_TOKEN:
         description: "Reads private submodules; pass it with `secrets: inherit`."
@@ -29,10 +33,8 @@ permissions:
   contents: read
 
 jobs:
-  standards:
+  plumbcheck:
     runs-on: ubuntu-latest
-    env:
-      STANDARDS_REF: ${{ inputs.ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,22 +71,36 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - name: Install verdog-standards and its linters
+      - name: Install plumbcheck and its linters
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          uv tool install "verdog-standards @ git+https://github.com/verdog-ai/standards@${STANDARDS_REF}"
-          verdog-standards install
-      # Each uv path source `../<name>` with a repository verdog-ai/<name>,
-      # on the same-named branch if it has one, so cross-repository changes
-      # test together.
+          if [ -z "$VERSION" ] && [ -f plumbcheck.yml ]; then
+            VERSION=$(sed -nE 's/^PLUMBCHECK_VERSION:[[:space:]]*["'\'']?([^"'\''[:space:]]+).*/\1/p' plumbcheck.yml | head -n 1)
+          fi
+          repository="git+https://github.com/drexlerd/plumbcheck"
+          case "$VERSION" in
+            "") spec="plumbcheck @ $repository" ;;
+            [0-9]*.[0-9]*) spec="plumbcheck==$VERSION" ;;
+            *) spec="plumbcheck @ $repository@$VERSION" ;;
+          esac
+          echo "installing $spec"
+          uv tool install "$spec"
+          plumbcheck --version
+          plumbcheck install
+      # Each uv path source `../<name>` with a repository <owner>/<name>, on
+      # the same-named branch if it has one, so cross-repository changes test
+      # together.
       - name: Check out sibling repositories
         env:
           TOKEN: ${{ secrets.SUBMODULES_TOKEN || github.token }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           auth="url.https://x-access-token:${TOKEN}@github.com/.insteadOf=https://github.com/"
-          for name in $(verdog-standards siblings); do
-            url="https://github.com/verdog-ai/${name}.git"
+          for name in $(plumbcheck siblings); do
+            url="https://github.com/${OWNER}/${name}.git"
             git -c "$auth" ls-remote --exit-code "$url" HEAD > /dev/null 2>&1 || continue
             branch=()
             if git -c "$auth" ls-remote --exit-code --heads "$url" "$BRANCH" > /dev/null 2>&1; then
@@ -92,11 +108,11 @@ jobs:
             fi
             git -c "$auth" clone --depth 1 "${branch[@]}" "$url" "../$name"
           done
-      - run: verdog-standards types
-      - name: Tool configurations match the standards
-        run: verdog-standards sync --check
+      - run: plumbcheck types
+      - name: Tool configurations are in sync
+        run: plumbcheck sync --check
       - name: The types' commands
-        run: verdog-standards run
+        run: plumbcheck run
       # Runs even when a command failed, so a reported build failure does not
       # hide the findings; clang-tidy reads the compile commands `run` wrote.
       - name: No findings
@@ -105,6 +121,6 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DEFAULT: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
         run: |
-          if [ "$DEFAULT" = true ]; then exec verdog-standards lint --all; fi
+          if [ "$DEFAULT" = true ]; then exec plumbcheck lint --all; fi
           if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then BASE=HEAD~1; fi
-          verdog-standards lint --base "$BASE"
+          plumbcheck lint --base "$BASE"

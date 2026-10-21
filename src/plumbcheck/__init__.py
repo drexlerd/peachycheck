@@ -1,1 +1,1 @@
-"""The organization's standards: the engine and the ``verdog-standards`` CLI."""
+"""The organization's standards: the engine and the ``plumbcheck`` CLI."""

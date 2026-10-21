@@ -1,0 +1,9 @@
+# A sample organization: its guides and its rules, which override
+# plumbcheck's defaults. Relative paths resolve against this file.
+GUIDES: guides
+RULES: rules
+FILES:
+  python-package:
+    ruff.toml: rules/ruff.toml
+  cpp:
+    .clang-tidy: rules/.clang-tidy

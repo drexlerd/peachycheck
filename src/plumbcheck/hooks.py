@@ -6,9 +6,9 @@ commands) before the agent finishes, and blocks at most ``ATTEMPTS`` times in
 a row. Both read the hook's JSON on stdin; the CLI is told apart by its
 input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
 
-The hooks act only in repositories with a ``standards.yml``, so they can be
-installed for the whole user; ``VERDOG_STANDARDS_HOOKS=off`` turns them off.
-A repository whose ``.venv`` has another version of verdog-standards answers
+The hooks act only in repositories with a ``plumbcheck.yml``, so they can be
+installed for the whole user; ``PLUMBCHECK_HOOKS=off`` turns them off.
+A repository whose ``.venv`` has another version of plumbcheck answers
 with that one, so its pin wins over the user's install.
 """
 
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
 
-from verdog_standards import cli, config, linting
+from plumbcheck import cli, config, linting
 
 ATTEMPTS: Final = 2  # blocked stops in a row before the agent may stop
 EDIT_FINDINGS: Final = 20  # shown after an edit
@@ -51,10 +51,10 @@ def _codex(payload: dict[str, Any]) -> bool:
 def _root(folder: str | Path) -> Path | None:
     """The repository of ``folder`` if the hooks act there.
 
-    They act in a repository with a ``standards.yml``, unless
-    ``VERDOG_STANDARDS_HOOKS`` is ``off``.
+    They act in a repository with a ``plumbcheck.yml``, unless
+    ``PLUMBCHECK_HOOKS`` is ``off``.
     """
-    if os.environ.get("VERDOG_STANDARDS_HOOKS") == "off":
+    if os.environ.get("PLUMBCHECK_HOOKS") == "off":
         return None
     found = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -144,7 +144,7 @@ def _counter(root: Path, session: str) -> Path:
         check=True,
     )
     name = re.sub(r"[^\w.-]", "_", session or "session")
-    return Path(found.stdout.strip()) / "verdog-standards" / f"stop-{name}"
+    return Path(found.stdout.strip()) / "plumbcheck" / f"stop-{name}"
 
 
 def stop(
@@ -169,7 +169,7 @@ def stop(
         counter.unlink(missing_ok=True)
         return allow
     reason = (
-        "The standards' check fails; fix every finding and failure, then "
+        "plumbcheck's check fails; fix every finding and failure, then "
         "finish:\n" + "\n".join(problems)
     )
     if attempts >= ATTEMPTS:
@@ -213,19 +213,17 @@ def run(event: str) -> int:
 
 
 def pinned(root: Path) -> Path | None:
-    """The ``verdog-standards`` of ``root``'s ``.venv``, if another version.
+    """The ``plumbcheck`` of ``root``'s ``.venv``, if another version.
 
     ponytail: reads only ``.venv``; a moved UV_PROJECT_ENVIRONMENT is missed.
     """
-    command = root / ".venv" / "bin" / "verdog-standards"
+    command = root / ".venv" / "bin" / "plumbcheck"
     found = sorted(
-        root.glob(
-            ".venv/lib/python*/site-packages/verdog_standards-*.dist-info"
-        )
+        root.glob(".venv/lib/python*/site-packages/plumbcheck-*.dist-info")
     )
     if not found or not command.is_file():
         return None
-    version = found[-1].name.removeprefix("verdog_standards-")
+    version = found[-1].name.removeprefix("plumbcheck-")
     return None if version == f"{cli.version()}.dist-info" else command
 
 
@@ -266,13 +264,19 @@ def _pinned_answer(
 
 def failed(payload: dict[str, Any], event: str, error: Exception) -> Reply:
     """Report a failure of the hook itself without blocking the agent."""
-    message = f"verdog-standards hook {event} failed: {error!r}"
+    message = f"plumbcheck hook {event} failed: {error!r}"
     if _codex(payload) and event == "stop":
         return Reply(stdout=json.dumps({"systemMessage": message}))
     return Reply(0 if _codex(payload) else 1, stderr=message)
 
 
-MARK: Final = "verdog-standards hook "
+MARK: Final = "plumbcheck hook "
+# The marks of earlier names, whose hooks a reinstall replaces too.
+MARKS: Final = (MARK, "verdog-standards hook ")
+
+
+def _ours(hook: dict[str, Any]) -> bool:
+    return any(mark in str(hook.get("command", "")) for mark in MARKS)
 
 
 def _others(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -280,9 +284,7 @@ def _others(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         group
         for group in groups
-        if not any(
-            MARK in str(h.get("command", "")) for h in group.get("hooks", [])
-        )
+        if not any(_ours(h) for h in group.get("hooks", []))
     ]
 
 
@@ -323,8 +325,8 @@ def install(
 
     With ``remove``, take exactly our hooks out of them instead.
     """
-    found = shutil.which("verdog-standards")
-    command = found or str(Path(sys.executable).with_name("verdog-standards"))
+    found = shutil.which("plumbcheck")
+    command = found or str(Path(sys.executable).with_name("plumbcheck"))
     targets = [
         (home / ".claude" / "settings.json", CLAUDE_EDITS, claude),
         (home / ".codex" / "hooks.json", "apply_patch", codex),

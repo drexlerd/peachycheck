@@ -1,7 +1,7 @@
-"""``verdog-standards lint``: the linters of ``standards.yml`` on a repository.
+"""``plumbcheck lint``: the linters of ``plumbcheck.yml`` on a repository.
 
 The files are the given ones, those changed since a base, or all; generated
-files of a Verdog project and the pinned guides are never checked. Each
+files of a Verdog project are never checked. Each
 linter runs on the files of its extensions, and every finding fails. A
 finding names its linter and rule; the report adds the guidelines the rule
 maps to, with the leaf of each.
@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, cast
 
-from verdog_standards import config, engine
+from plumbcheck import config, engine
 
-BIN: Final = Path("~/.cache/verdog-standards/bin")
+BIN: Final = Path("~/.cache/plumbcheck/bin")
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
 CHUNK: Final = 200  # files per run of a linter
 DEFAULT_OK: Final = (0, 1)
@@ -111,15 +111,13 @@ def _selected(
 
 def _command(root: Path, spec: dict[str, Any], key: str) -> list[str]:
     """The linter's command ``key`` (``command`` or ``fix``) as arguments."""
-    values = {"python": sys.executable, "rules": str(config.RULES)}
+    found = engine.configuration()
+    values = {"python": sys.executable, "rules": str(config.rules(found))}
     line = shlex.split(str(spec[key]).format_map(values))
-    found = spec.get("config")
-    if found:
-        own = root / found["file"]
-        line += [
-            found["flag"],
-            str(own if own.is_file() else config.RULES / found["file"]),
-        ]
+    wanted = spec.get("config")
+    chosen = config.rule_file(root, found, wanted["file"]) if wanted else None
+    if wanted and chosen:
+        line += [wanted["flag"], str(chosen)]
     return line + [str(a) for a in spec["arguments"]]
 
 
@@ -218,7 +216,7 @@ def _run(
     except FileNotFoundError as missing:
         return Result(
             problems=[
-                f"{name}: {missing.filename} is not installed; run `verdog-standards install`"
+                f"{name}: {missing.filename} is not installed; run `plumbcheck install`"
             ]
         )
     if result.returncode not in tuple(spec.get("ok", DEFAULT_OK)):
@@ -273,7 +271,7 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
     are skipped. A linter whose ``requires`` file is missing is a problem.
     """
     present = sorted(engine.authored(root, paths))
-    linters = config.linters(config.load(root))
+    linters = config.linters(engine.use(root))
     standards = engine.load()
     result = Result()
     work: dict[str, list[str]] = {}
@@ -322,11 +320,12 @@ def _rules_of(
             for alias in aliases
         )
     ]
+    link = spec.get("link", finding.linter)
+    if not mapped and engine.instance() is None:
+        return [f"- see {link}"]
     if not mapped:
         what = f"{aliases[0]} {finding.rule}".strip()
-        return [
-            f"- no guideline maps {what}; see {spec.get('link', finding.linter)}"
-        ]
+        return [f"- no guideline maps {what}; see {link}"]
     return [engine.rule_line(g, root) for g in mapped]
 
 
@@ -334,9 +333,7 @@ def repair(
     root: Path, path: str, found: Sequence[Finding], limit: int = SHOWN_FINDINGS
 ) -> str:
     """A file's repair message: its findings, each with its guidelines."""
-    specs = cast(
-        dict[str, dict[str, Any]], config.load(root).get("LINTERS", {})
-    )
+    specs = cast(dict[str, dict[str, Any]], engine.use(root).get("LINTERS", {}))
     guidelines = [g for lang in engine.load().values() for g in lang.guidelines]
     lines = [
         f"{path} has {len(found)} findings; fix each one and follow the "
@@ -395,5 +392,5 @@ def install(versions: dict[str, dict[str, str]]) -> list[str]:
         done.append(f"{name} {pin['version']}: downloaded")
     for tool in ("ruff", "codespell", "doc8", "clang-tidy"):
         where = shutil.which(tool, path=search_path())
-        done.append(f"{tool}: {where or 'missing; reinstall verdog-standards'}")
+        done.append(f"{tool}: {where or 'missing; reinstall plumbcheck'}")
     return done

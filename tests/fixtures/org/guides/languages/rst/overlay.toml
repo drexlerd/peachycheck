@@ -1,0 +1,16 @@
+["house/syntax"]
+text = "Keep the markup valid and free of trailing whitespace."
+kind = "documentation"
+checked_by = ["doc8"]
+priority = 1
+
+["house/prose"]
+text = "Write without repeated words."
+kind = "documentation"
+checked_by = ["vale:Vale.*"]
+priority = 2
+
+["house/spelling"]
+text = "Spell words correctly."
+kind = "documentation"
+checked_by = ["codespell"]

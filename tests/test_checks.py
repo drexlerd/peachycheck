@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from verdog_standards.checks import jinja, jinja_environment
+from plumbcheck.checks import jinja, jinja_environment
 
 
 def test_a_line_with_more_than_one_block_tag_is_reported() -> None:

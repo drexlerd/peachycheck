@@ -45,8 +45,8 @@ jobs:
         run: |
           uv venv /tmp/wheel
           uv pip install --python /tmp/wheel/bin/python dist/*.whl
-          /tmp/wheel/bin/verdog-standards --version
-          /tmp/wheel/bin/verdog-standards check
+          /tmp/wheel/bin/plumbcheck --version
+          /tmp/wheel/bin/plumbcheck --root tests/fixtures/org check
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -57,10 +57,10 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    if: github.repository == 'verdog-ai/standards'
+    if: github.repository == 'drexlerd/plumbcheck'
     environment:
       name: pypi
-      url: https://pypi.org/project/verdog-standards/
+      url: https://pypi.org/project/plumbcheck/
     permissions:
       id-token: write
     steps:

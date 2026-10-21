@@ -1,0 +1,4 @@
+["house/no-secrets"]
+text = "Never commit credentials, tokens or private keys."
+checked_by = ["gitleaks"]
+priority = 1

@@ -1,14 +1,12 @@
 """The guides' manifest, parsers, trees and their completeness."""
 
-import re
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from verdog_standards import engine
-from verdog_standards import sources as s
+from plumbcheck import engine
+from plumbcheck import sources as s
 
 RULE_1 = """### <a name="rr-raii"></a>R.1: Hold resources in handles
 
@@ -212,42 +210,10 @@ def test_a_copy_must_match_its_pinned_sha256(tmp_path: Path) -> None:
         s.fetch(pinned, tmp_path)
 
 
-def test_every_committed_tree_is_generated_and_no_cached_guide_is_committed() -> (
-    None
-):
+def test_every_committed_tree_is_generated() -> None:
     assert engine.source_errors() == []
-    found = engine.guides()
-    assert {g.store for g in found.values()} == {"commit", "cache"}
-    for source in found.values():
-        folder = engine.tree(source)
-        for name in ("index.md", "index.toml", "LICENSE", "ATTRIBUTION.md"):
-            assert (folder / name).is_file(), (source.id, name)
-    rules = s.read_index(engine.tree(found["cpp-core-guidelines"]))
-    assert s.depth(rules) == 3
-    assert s.depth(s.read_index(engine.tree(found["google-python"]))) == 2
-    # No text of the cached guide is committed: not its files, nor its titles.
-    repository = engine.STANDARDS.parent
-    tracked = subprocess.run(
-        ["git", "-C", str(repository), "ls-files"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    # A rule's title after its id, such as "Use `unique_ptr` ...", from R.20.
-    titles = {r.title.partition(": ")[2] for r in rules} - {""}
-    quoted = re.compile("|".join(re.escape(t) for t in titles if len(t) > 24))
-    # Only paths: a failure must not print the guide's text in a public log.
-    found = [
-        path
-        for path in tracked
-        if "cpp-core-guidelines" in Path(path).parts
-        or (
-            (repository / path).is_file()
-            and quoted.search(_text(repository / path))
-        )
-    ]
-    assert found == []
-
-
-def _text(path: Path) -> str:
-    return path.read_text(errors="ignore") if path.stat().st_size < 4e6 else ""
+    (source,) = engine.guides().values()
+    folder = engine.tree(source)
+    for name in ("index.md", "index.toml", "LICENSE", "ATTRIBUTION.md"):
+        assert (folder / name).is_file(), name
+    assert s.depth(s.read_index(folder)) == 2

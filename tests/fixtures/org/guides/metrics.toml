@@ -1,0 +1,21 @@
+# The sample organization's code metrics.
+
+[cc_max]
+measured_by = ["radon"]
+definition = "Maximum cyclomatic complexity"
+better = "lower"
+loops = ["feature_implementer"]
+
+["new complexity"]
+measured_by = ["radon"]
+definition = "No new or changed function has a cyclomatic complexity above 10"
+better = "none violated"
+
+[cc_mean]
+measured_by = ["radon"]
+definition = "Mean cyclomatic complexity of authored functions"
+better = "lower"
+
+["behavior traceability"]
+status = "planned"
+definition = "Every behavior traces to a test"

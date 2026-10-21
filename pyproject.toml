@@ -1,17 +1,11 @@
 [project]
-name = "verdog-standards"
-version = "0.2.0"
-description = "The coding and documentation standards of verdog-ai, and their checks"
+name = "plumbcheck"
+version = "0.1.0"
+description = "Native linters, project checks and agent hooks from one plumbcheck.yml per repository"
 readme = "README.md"
 license = "AGPL-3.0-only"
-# The bundled guides and Vale styles keep their own licenses.
-license-files = [
-    "LICENSE",
-    "standards/languages/*/references/*/LICENSE",
-    "standards/languages/*/references/*/ATTRIBUTION.md",
-    "rules/vale/styles/*/LICENSE",
-]
-authors = [{ name = "verdog-ai" }]
+license-files = ["LICENSE"]
+authors = [{ name = "drexlerd" }]
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,8 +16,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Quality Assurance",
 ]
-# The linters of standards.yml that are Python packages, pinned; vale and
-# gitleaks are downloaded by `verdog-standards install`.
+# The default linters that are Python packages, pinned; vale and gitleaks
+# are downloaded by `plumbcheck install`.
 dependencies = [
     "pyyaml==6.0.3",
     "ruff==0.17.1",
@@ -33,12 +27,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/verdog-ai/standards"
-Source = "https://github.com/verdog-ai/standards"
-Issues = "https://github.com/verdog-ai/standards/issues"
+Homepage = "https://github.com/drexlerd/plumbcheck"
+Source = "https://github.com/drexlerd/plumbcheck"
+Issues = "https://github.com/drexlerd/plumbcheck/issues"
 
 [project.scripts]
-verdog-standards = "verdog_standards.cli:main"
+plumbcheck = "plumbcheck.cli:main"
 
 [dependency-groups]
 dev = [
@@ -53,21 +47,8 @@ dev = [
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
-# The C++ Core Guidelines are fetched into the cache at runtime, never packaged.
 [tool.hatch.build.targets.sdist]
-include = [
-    "src",
-    "standards",
-    "rules",
-    "standards.yml",
-    "README.md",
-    "LICENSE",
-]
+include = ["/src", "/README.md", "/LICENSE"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/verdog_standards"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"standards" = "verdog_standards/standards"
-"rules" = "verdog_standards/rules"
-"standards.yml" = "verdog_standards/standards.yml"
+packages = ["src/plumbcheck"]

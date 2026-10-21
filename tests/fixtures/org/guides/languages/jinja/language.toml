@@ -1,0 +1,2 @@
+title = "Jinja"
+extensions = [".j2"]

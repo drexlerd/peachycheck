@@ -1,0 +1,2 @@
+# The sample organization's clang-tidy checks.
+Checks: '-*,cppcoreguidelines-owning-memory'

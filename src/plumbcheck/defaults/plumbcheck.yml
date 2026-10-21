@@ -1,0 +1,223 @@
+# plumbcheck's defaults: every configuration extends this file first.
+#
+# A repository's plumbcheck.yml, and the files it EXTENDS (URLs or paths),
+# override any key: later files win, mappings merge key by key, and the keys
+# CONFIG_PROPERTIES_TO_APPEND names append their lists instead, as in
+# MegaLinter (https://megalinter.io/latest/config-file/). Relative paths in
+# RULES, GUIDES and FILES resolve against the file that names them.
+#
+# Overrides, as in MegaLinter: ENABLE_LINTERS (only these), DISABLE_LINTERS,
+# FILTER_REGEX_EXCLUDE (a path regex for every linter) and, per linter,
+# <LINTER>_FILTER_REGEX_INCLUDE, <LINTER>_FILTER_REGEX_EXCLUDE and
+# <LINTER>_ARGUMENTS (appended to its command).
+
+# The folder of the linters' fallback configurations: a linter's `config`
+# file is the repository's own, else this folder's, else the tool's defaults.
+RULES: rules
+
+# The folder of the guides (languages/*/language.toml and overlay.toml,
+# sources.toml, metrics.toml) that `check`, `show` and `index` read and lint
+# reports cite; none by default.
+# GUIDES: standards
+
+# One entry per linter. A linter checks the files with its `extensions`, or
+# every file for `language: general`; `language` names the language of the
+# guides whose guidelines its findings cite. `command` gets the files
+# appended ({python} is plumbcheck's interpreter, {rules} the RULES folder);
+# `fix`, if any, runs first with `lint --fix`. `config` passes the
+# repository's own file of that name, else the one in RULES. `output` parses
+# the findings: json-ruff, json-eslint, json-vale, json-gitleaks or
+# regex:<pattern> (groups path, line, rule, message; `rule` names the rule
+# when the pattern has none). `ok` lists the exit codes that mean "ran";
+# `requires` is a file the linter needs, and `missing` says how to get it.
+# `aliases` are the names the guides' `checked_by` use; `list` prints the
+# checks the linter runs, for the coverage report. A linter without
+# `command` is run by the project types' commands; it is listed so guides
+# may name it.
+LINTERS:
+  PYTHON_RUFF:
+    language: python
+    extensions: [.py]
+    aliases: [ruff, ruff-docstrings]
+    link: https://docs.astral.sh/ruff/rules/
+    command: ruff check --no-cache --force-exclude --output-format json
+    fix: ruff check --no-cache --force-exclude --fix --exit-zero --quiet
+    config: {file: ruff.toml, flag: --config}
+    output: json-ruff
+  PYTHON_RUFF_FORMAT:
+    language: python
+    extensions: [.py]
+    aliases: [ruff-format]
+    link: https://docs.astral.sh/ruff/formatter/
+    command: ruff format --no-cache --force-exclude --check --output-format json
+    fix: ruff format --no-cache --force-exclude --quiet
+    config: {file: ruff.toml, flag: --config}
+    output: json-ruff
+  PYTHON_JINJA_ENVIRONMENT:
+    language: python
+    extensions: [.py]
+    aliases: [jinja-environment]
+    link: https://jinja.palletsprojects.com/en/stable/api/#jinja2.Environment
+    command: "{python} -m plumbcheck.checks.jinja_environment"
+    output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<message>.*)$'
+    rule: environment
+  JINJA_TAGS:
+    language: jinja
+    extensions: [.j2, .jinja, .jinja2]
+    aliases: [jinja-tags]
+    link: https://jinja.palletsprojects.com/en/stable/templates/#whitespace-control
+    command: "{python} -m plumbcheck.checks.jinja"
+    output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<message>.*)$'
+    rule: tags
+  RST_DOC8:
+    language: rst
+    extensions: [.rst]
+    aliases: [doc8]
+    link: https://github.com/PyCQA/doc8
+    command: doc8
+    output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<rule>D\d+) (?P<message>.*)$'
+  SPELL_VALE:
+    language: rst
+    extensions: [.rst]
+    aliases: [vale]
+    link: https://vale.sh/docs/
+    command: vale --no-exit --output JSON
+    config: {file: .vale.ini, flag: --config}
+    output: json-vale
+    ok: [0]
+  SPELL_CODESPELL:
+    language: rst
+    extensions: [.rst]
+    aliases: [codespell]
+    link: https://github.com/codespell-project/codespell
+    command: codespell
+    output: 'regex:^(?P<path>[^:\n]+):(?P<line>\d+): (?P<message>.*)$'
+    rule: misspelling
+    ok: [0, 65]
+  TYPESCRIPT_ESLINT:
+    language: typescript
+    extensions: [.ts, .tsx]
+    aliases: [eslint]
+    link: https://eslint.org/docs/latest/rules/
+    # ESLint 9 has no `unix` formatter.
+    command: node_modules/.bin/eslint --format json
+    fix: node_modules/.bin/eslint --fix
+    output: json-eslint
+    requires: node_modules/.bin/eslint
+    missing: run `npm ci` first
+  TYPESCRIPT_TSC:
+    language: typescript
+    aliases: [tsc]
+    link: https://www.typescriptlang.org/tsconfig/#strict
+    # Checked by the typescript type's `npm run check`.
+  CPP_CLANG_TIDY:
+    language: cpp
+    extensions: [.cpp, .cc, .cxx, .hpp, .hh, .h, .tpp, .ipp]
+    aliases: [clang-tidy]
+    link: https://clang.llvm.org/extra/clang-tidy/checks/list.html
+    command: clang-tidy -p build/standards --quiet
+    config: {file: .clang-tidy, flag: --config-file}
+    output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'
+    requires: build/standards/compile_commands.json
+    missing: configure first (`plumbcheck run` creates it)
+    list: clang-tidy --list-checks
+  REPOSITORY_GITLEAKS:
+    language: general
+    aliases: [gitleaks]
+    link: https://github.com/gitleaks/gitleaks
+    # One path per run; plumbcheck runs it per file.
+    command: >-
+      gitleaks dir --no-banner --log-level error --redact --exit-code 0
+      --report-format json --report-path -
+    per_file: true
+    output: json-gitleaks
+    ok: [0]
+
+# The tools `plumbcheck install` downloads into ~/.cache/plumbcheck/bin,
+# checked against their sha256 (linux x64). ruff, codespell, doc8 and
+# clang-tidy are pinned Python dependencies of plumbcheck; eslint is the
+# repository's own (node_modules).
+VERSIONS:
+  vale:
+    version: 3.24.0
+    url: https://github.com/errata-ai/vale/releases/download/v3.24.0/vale_3.24.0_Linux_64-bit.tar.gz
+    sha256: 867534ddb678abca7f214bc4706ead0922bd5252ffe8035fc227013f66c8b214
+  gitleaks:
+    version: 8.30.1
+    url: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+    sha256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+# The project types: a type applies when all its markers exist and no other
+# found type replaces it; it runs after the types its `after` names. A
+# `standards` preset of a kind in CMakePresets.json or CMakeUserPresets.json
+# replaces the command at that kind's position, counting `setup` first.
+# `setup` commands install or configure; `run` and CI run them before the
+# checks in `commands`, the Stop hook only the checks.
+PROJECT_TYPES:
+  python-package:
+    title: Python package
+    markers: [pyproject.toml, uv.lock]
+    setup: [uv sync --locked --all-groups]
+    commands:
+      - uv run --no-sync ruff check .
+      - uv run --no-sync ruff format --check .
+      - uv run --no-sync pyright
+      - uv run --no-sync pytest
+  verdog-project:
+    title: Verdog project
+    markers: [project.json]
+    # Its pyproject.toml is generated by Verdog, so it is no plain Python package.
+    replaces: [python-package]
+    # pyright and pytest use the first workflow environment that has pytest,
+    # else the first one (pytest added on top); the tests are the repository's
+    # own, not those of imported workflows.
+    setup: [uv tool install verdog-cli, verdog sync]
+    commands:
+      - verdog check
+      - uv tool run ruff check .
+      - uv tool run ruff format --check .
+      - >-
+        uv tool run pyright --pythonpath "$(for p in .verdog/environments/*/bin/python;
+        do "$p" -c 'import pytest' 2>/dev/null && echo "$p" && exit; done;
+        ls .verdog/environments/*/bin/python | head -1)"
+      - >-
+        test ! -d tests || uv run --no-project --python "$(for p in .verdog/environments/*/bin/python;
+        do "$p" -c 'import pytest' 2>/dev/null && echo "$p" && exit; done;
+        ls .verdog/environments/*/bin/python | head -1)" --with pytest python -m
+        pytest -q -p no:cacheprovider tests
+  typescript:
+    title: TypeScript
+    markers: [package.json]
+    # Every package defines the scripts `check` (format, eslint, tsc) and `test`.
+    setup: [npm ci]
+    commands: [npm run check, npm test]
+  cpp:
+    title: C++
+    markers: [CMakeLists.txt]
+    # Native dependencies may come from Python wheels, so the Python types sync first.
+    after: [python-package, verdog-project]
+    setup: [cmake -S . -B build/standards -DCMAKE_EXPORT_COMPILE_COMMANDS=ON]
+    # The Stop hook configures only while build/standards is missing.
+    creates: build/standards
+    commands:
+      - cmake --build build/standards --parallel
+      - ctest --test-dir build/standards --output-on-failure
+    # The configure preset keeps binaryDir build/standards and
+    # CMAKE_EXPORT_COMPILE_COMMANDS=ON.
+    presets:
+      configurePresets: cmake --preset standards
+      buildPresets: cmake --build --preset standards --parallel
+      testPresets: ctest --preset standards --output-on-failure
+
+# The tool configurations `sync` writes into a repository of each type, so
+# editors, hooks and CI read the same rules; `sync --check` fails on any
+# difference. Vale's .vale.ini stays in RULES: its StylesPath is relative to
+# it.
+FILES:
+  python-package:
+    ruff.toml: rules/ruff.toml
+  verdog-project:
+    ruff.toml: rules/verdog-project/ruff.toml
+    pyrightconfig.json: rules/verdog-project/pyrightconfig.json
+  typescript:
+    eslint.config.mjs: rules/eslint.config.mjs

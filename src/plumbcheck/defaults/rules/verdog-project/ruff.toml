@@ -1,0 +1,11 @@
+# Written by `plumbcheck sync` from plumbcheck's defaults.
+# Only settings that differ from ruff's defaults, each with its reason.
+
+# Imported workflows (external/) and the generated declarations (__init__.py)
+# belong to their own repositories and to the Verdog compiler.
+extend-exclude = ["external", "**/__init__.py"]
+
+[lint]
+# Beyond the default E4, E7, E9 and F: import sorting, which `ruff format`
+# leaves alone, and bugbear's likely bugs.
+extend-select = ["I", "B"]

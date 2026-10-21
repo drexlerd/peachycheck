@@ -1,6 +1,6 @@
 """Report Jinja environments that keep tag lines in the output.
 
-Run as ``python -m verdog_standards.checks.jinja_environment FILE...``; each
+Run as ``python -m plumbcheck.checks.jinja_environment FILE...``; each
 call of jinja2's ``Environment``, ``SandboxedEnvironment`` or ``Template``
 (which builds an environment) without both ``trim_blocks=True`` and
 ``lstrip_blocks=True`` is printed as ``path:line: message``. A call that

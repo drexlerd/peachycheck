@@ -1,9 +1,9 @@
-"""The command line ``verdog-standards``: lint, check, show, sync and run.
+"""The command line ``plumbcheck``: lint, check, show, sync and run.
 
 A repository's type is recognised from marker files; the ``PROJECT_TYPES`` of
-its ``standards.yml`` name each type's markers, the types it replaces and its
-commands, and ``FILES`` the tool configurations from ``rules/`` every
-repository of that type shares. ``sync`` writes them, ``sync --check`` fails
+its ``plumbcheck.yml`` name each type's markers, the types it replaces and its
+commands, and ``FILES`` the tool configurations every repository of that
+type shares. ``sync`` writes them, ``sync --check`` fails
 on any difference and ``run`` executes the types' commands, as the shared
 workflow does; ``lint`` runs the linters and ``hook`` answers the agents'
 hooks. ``init`` sets a repository up, ``upgrade`` moves it to another version.
@@ -24,17 +24,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from verdog_standards import config, engine, hooks, linting, sources
+from plumbcheck import config, engine, hooks, linting, sources
 
-ORGANIZATION_URL = (
-    "https://raw.githubusercontent.com/verdog-ai/standards/{ref}/standards.yml"
-)
-# The organization's file at any ref, as EXTENDS names it.
-ORGANIZATION_PATTERN = re.compile(
-    re.escape(ORGANIZATION_URL).replace(re.escape("{ref}"), r"[^/\s]+")
-)
-PACKAGE = "verdog-standards"
-WORKFLOW = """name: Standards
+PACKAGE = "plumbcheck"
+WORKFLOW = """name: plumbcheck
 
 on:
   pull_request:
@@ -42,9 +35,12 @@ on:
     branches: [main]
 
 jobs:
-  standards:
-    uses: verdog-ai/standards/.github/workflows/check.yml@main
+  plumbcheck:
+    uses: drexlerd/plumbcheck/.github/workflows/check.yml@{ref}
 """
+# The reusable workflow at any ref, and the version plumbcheck.yml pins.
+USES = re.compile(r"(drexlerd/plumbcheck/\.github/workflows/check\.yml@)\S+")
+PIN = re.compile(r"^PLUMBCHECK_VERSION:.*$", re.M)
 
 
 def project_types(root: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -145,7 +141,7 @@ def _siblings(root: Path) -> int:
 
 
 def version() -> str:
-    """The installed version of verdog-standards."""
+    """The installed version of plumbcheck."""
     return importlib.metadata.version(PACKAGE)
 
 
@@ -159,15 +155,10 @@ def released() -> bool:
     return not {"vcs_info", "dir_info"} & set(direct)
 
 
-def _ref() -> str:
-    """The ref EXTENDS names: the release's tag, else the installed commit."""
-    return f"v{version()}" if released() else _commit()
-
-
 def _commit() -> str:
-    """The commit of verdog-standards this engine was installed from."""
+    """The commit of plumbcheck this engine was installed from."""
     try:
-        found = importlib.metadata.distribution("verdog-standards")
+        found = importlib.metadata.distribution(PACKAGE)
         direct = json.loads(found.read_text("direct_url.json") or "{}")
         commit = str(direct.get("vcs_info", {}).get("commit_id", ""))
     except importlib.metadata.PackageNotFoundError:
@@ -176,7 +167,7 @@ def _commit() -> str:
         return commit
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=config.ORGANIZATION.parent,
+        cwd=Path(__file__).parent,
         capture_output=True,
         text=True,
     )
@@ -186,9 +177,6 @@ def _commit() -> str:
 def sync(root: Path, *, check: bool) -> list[str]:
     """Write the types' configs into ``root``; with ``check``, only compare.
 
-    Without ``check``, a missing ``standards.yml`` is written too, extending
-    the organization's file at this engine's release tag, else its commit.
-
     Returns:
         The files that differ (``check``) or were written.
     """
@@ -196,7 +184,7 @@ def sync(root: Path, *, check: bool) -> list[str]:
     differing: list[str] = []
     for name in types_of(root):
         for target_name, source_name in files.get(name, {}).items():
-            source = config.RULES.parent / source_name
+            source = Path(source_name)
             target = root / target_name
             if target.is_file() and filecmp.cmp(source, target, shallow=False):
                 continue
@@ -204,14 +192,6 @@ def sync(root: Path, *, check: bool) -> list[str]:
             if not check:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
-    own = root / config.NAME
-    if not check and not own.is_file():
-        url = ORGANIZATION_URL.format(ref=_ref())
-        own.write_text(
-            "# The organization's standards; override keys below.\n"
-            f"EXTENDS: {url}\n"
-        )
-        differing.append(config.NAME)
     return differing
 
 
@@ -220,7 +200,7 @@ def _uv_add(root: Path, requirement: str) -> None:
 
 
 def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
-    """Pin ``verdog-standards==wanted`` in the dev group of ``root``.
+    """Pin ``plumbcheck==wanted`` in the dev group of ``root``.
 
     Without ``add``, only an existing pin moves. A Verdog project generates
     its pyproject.toml, so it gets none.
@@ -238,49 +218,85 @@ def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
     dev = [d for d in groups.get("dev", []) if isinstance(d, str)]
     if requirement in dev:
         return f"pyproject.toml: {requirement} already"
-    if not add and not any(re.match(r"verdog[-_.]standards\b", d) for d in dev):
+    if not add and not any(re.match(r"plumbcheck\b", d) for d in dev):
         return ""
     _uv_add(root, requirement)
     return f"pyproject.toml: {requirement} in the dev dependencies"
 
 
-def init(root: Path) -> int:
-    """Set ``root`` up: standards.yml, the CI workflow, configs, tools, pin."""
-    workflow = root / ".github" / "workflows" / "standards.yml"
+def _pin() -> str:
+    """The version plumbcheck.yml pins: the release, else the commit."""
+    return version() if released() else _commit()
+
+
+def _ref(pin: str) -> str:
+    """The ref of the reusable workflow for ``pin``: a release's tag."""
+    return f"v{pin}" if re.match(r"\d+\.\d+", pin) else pin
+
+
+def init(root: Path, extends: str | None = None) -> int:
+    """Set ``root`` up: plumbcheck.yml, the CI workflow, configs, tools, pin."""
+    own = root / config.NAME
+    if own.is_file():
+        print(f"{config.NAME}: exists")
+    else:
+        own.write_text(
+            "# plumbcheck's configuration: "
+            "https://github.com/drexlerd/plumbcheck#configuration\n"
+            + (f"EXTENDS: {extends}\n" if extends else "")
+            + f"PLUMBCHECK_VERSION: {_pin()}\n"
+        )
+        print(f"{config.NAME}: written")
+    workflow = root / ".github" / "workflows" / "plumbcheck.yml"
     if workflow.is_file():
-        print(".github/workflows/standards.yml: exists")
+        print(".github/workflows/plumbcheck.yml: exists")
     else:
         inherit = (root / ".gitmodules").is_file()
         workflow.parent.mkdir(parents=True, exist_ok=True)
-        workflow.write_text(WORKFLOW + ("    secrets: inherit\n" * inherit))
-        print(".github/workflows/standards.yml: written")
+        workflow.write_text(
+            WORKFLOW.format(ref=_ref(_pin()))
+            + ("    secrets: inherit\n" * inherit)
+        )
+        print(".github/workflows/plumbcheck.yml: written")
     _sync(root, check_only=False)
-    install()
+    install(root)
     pinned = _dev_dependency(root, version() if released() else None, add=True)
     if pinned:
         print(pinned)
     return 0
 
 
+def _moved(root: Path, path: Path, pattern: re.Pattern[str], line: str) -> None:
+    """Replace ``pattern``'s matches in ``path`` by ``line``, a replacement."""
+    name = path.relative_to(root).as_posix()
+    text = path.read_text()
+    moved = pattern.sub(line, text)
+    if moved != text:
+        path.write_text(moved)
+        print(f"{name}: moved")
+    elif pattern.search(text):
+        print(f"{name}: already")
+
+
 def upgrade(root: Path, to: str | None) -> int:
-    """Move EXTENDS and the dev pin to ``to`` (or the installed version)."""
+    """Move the pins of plumbcheck to ``to`` (or the installed version).
+
+    The pins are ``PLUMBCHECK_VERSION`` of plumbcheck.yml, the reusable
+    workflow's ref in ``.github/workflows`` and the dev dependency.
+    """
     own = root / config.NAME
     if not own.is_file():
-        print("no standards.yml; run `verdog-standards init` first")
+        print(f"no {config.NAME}; run `plumbcheck init` first")
         return 1
     wanted = to.removeprefix("v") if to else None
     if wanted is None and released():
         wanted = version()
-    url = ORGANIZATION_URL.format(ref=f"v{wanted}" if wanted else _commit())
-    text = own.read_text()
-    moved, count = ORGANIZATION_PATTERN.subn(url, text)
-    if not count:
-        print("standards.yml: extends no verdog-ai/standards file, kept")
-    elif moved == text:
-        print(f"standards.yml: already extends {url}")
-    else:
-        own.write_text(moved)
-        print(f"standards.yml: extends {url}")
+    pin = wanted or _commit()
+    if not PIN.search(own.read_text()):
+        own.write_text(own.read_text() + f"PLUMBCHECK_VERSION: {pin}\n")
+    _moved(root, own, PIN, f"PLUMBCHECK_VERSION: {pin}")
+    for workflow in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        _moved(root, workflow, USES, f"\\g<1>{_ref(pin)}")
     pinned = _dev_dependency(root, wanted, add=False)
     if pinned:
         print(pinned)
@@ -349,6 +365,9 @@ def base_of(root: Path) -> str:
 
 def check() -> int:
     """Lint the instance and its metrics."""
+    if engine.instance() is None:
+        print(f"no GUIDES in {config.NAME}; nothing to check")
+        return 0
     standards = engine.load()
     for finding in engine.coherence(engine.graph()):
         print(f"warning ({finding.rule}): {finding.message}")
@@ -395,9 +414,9 @@ def lint(root: Path, options: argparse.Namespace) -> int:
     return 1 if messages else 0
 
 
-def install() -> int:
+def install(root: Path | None = None) -> int:
     """Download the pinned tools of ``VERSIONS``."""
-    versions = config.load().get("VERSIONS", {})
+    versions = config.load(root).get("VERSIONS", {})
     print("\n".join(linting.install(versions)))
     return 0
 
@@ -434,13 +453,13 @@ def show(root: Path, files: Sequence[str]) -> int:
 
 def parser() -> argparse.ArgumentParser:
     """The command line; a consumer may add arguments before parsing."""
-    result = argparse.ArgumentParser(prog="verdog-standards")
+    result = argparse.ArgumentParser(prog="plumbcheck")
     result.add_argument("--root", type=Path, default=Path.cwd())
     result.add_argument(
         "--version", action="version", version=f"%(prog)s {version()}"
     )
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("check", help="lint the standards themselves")
+    commands.add_parser("check", help="lint the guides of GUIDES")
     commands.add_parser("install", help="download the pinned linters")
     linted = commands.add_parser("lint", help="run the linters")
     linted.add_argument("files", nargs="*")
@@ -475,11 +494,14 @@ def parser() -> argparse.ArgumentParser:
     syncing = commands.add_parser("sync", help="write the types' tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
     commands.add_parser("run", help="run the types' commands")
-    commands.add_parser(
-        "init", help="set the repository up: standards.yml, CI, configs"
+    initializing = commands.add_parser(
+        "init", help="set the repository up: plumbcheck.yml, CI, configs"
+    )
+    initializing.add_argument(
+        "--extends", help="the URL or path of the file plumbcheck.yml extends"
     )
     upgrading = commands.add_parser(
-        "upgrade", help="move standards.yml and the dev pin to a version"
+        "upgrade", help="move the pins of plumbcheck to a version"
     )
     upgrading.add_argument("--to", help="default: the installed version")
     commands.add_parser("siblings", help="the sibling repositories uv needs")
@@ -511,12 +533,14 @@ def _show(root: Path, options: argparse.Namespace) -> int:
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Run one command of ``verdog-standards``."""
+    """Run one command of ``plumbcheck``."""
     options = parser().parse_args(arguments)
     root: Path = options.root.resolve()
+    if options.command in ("check", "show", "index"):
+        engine.use(root)
     commands: dict[str, Callable[[], int]] = {
         "check": check,
-        "install": install,
+        "install": lambda: install(root),
         "lint": lambda: lint(root, options),
         "hook": lambda: hooks.run(options.event),
         "hooks": lambda: install_hooks(options),
@@ -524,7 +548,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "types": lambda: _types(root),
         "sync": lambda: _sync(root, options.check),
         "run": lambda: run(root),
-        "init": lambda: init(root),
+        "init": lambda: init(root, options.extends),
         "upgrade": lambda: upgrade(root, options.to),
         "siblings": lambda: _siblings(root),
         "show": lambda: _show(root, options),

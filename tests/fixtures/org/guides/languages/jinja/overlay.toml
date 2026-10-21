@@ -1,0 +1,4 @@
+["house/one-tag"]
+text = "Put at most one block tag on a line."
+checked_by = ["jinja-tags"]
+priority = 1

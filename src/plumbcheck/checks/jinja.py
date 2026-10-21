@@ -1,6 +1,6 @@
 """Report Jinja template lines with more than one block tag.
 
-Run as ``python -m verdog_standards.checks.jinja FILE...``; each finding is
+Run as ``python -m plumbcheck.checks.jinja FILE...``; each finding is
 printed as ``path:line: message``. Comments ``{# ... #}`` and expressions
 ``{{ ... }}`` do not count, and a construct such as ``{% if %}...{% endif %}``
 that opens and closes inside one line of prose, with text outside it, is

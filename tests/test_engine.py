@@ -1,5 +1,6 @@
 """The engine: languages, guidelines, tools, selection, checks and graph."""
 
+import hashlib
 import json
 import re
 import shutil
@@ -9,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from verdog_standards import cli, config
-from verdog_standards import engine as standards
+from plumbcheck import cli, config
+from plumbcheck import engine as standards
+
+ORG = Path(__file__).parent / "fixtures" / "org"
 
 
 def _git(root: Path, *args: str) -> str:
@@ -24,8 +27,10 @@ def _git(root: Path, *args: str) -> str:
 
 
 def _repository(tmp_path: Path, contents: dict[str, str]) -> tuple[Path, str]:
+    """A committed repository of the sample organization."""
     root = tmp_path / "repository"
     root.mkdir()
+    _write(root / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
     for path, text in contents.items():
         _write(root / path, text)
     _git(root, "init", "-q")
@@ -42,29 +47,27 @@ def _write(path: Path, text: str) -> Path:
 
 def _instance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A copy of the instance that the test may change."""
-    instance = tmp_path / "standards"
-    shutil.copytree(standards.STANDARDS, instance)
-    monkeypatch.setattr(standards, "STANDARDS", instance)
+    instance = tmp_path / "guides"
+    shutil.copytree(ORG / "guides", instance)
+    monkeypatch.setattr(standards.IN_USE, "guides", instance)
     return instance
 
 
 def _organization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str
 ) -> Path:
-    """An organization file extending the real one with ``text``."""
+    """An organization file extending the sample one with ``text``, in use."""
     path = _write(
-        tmp_path / "org" / "standards.yml",
-        f"EXTENDS: {config.ORGANIZATION}\n{text}",
+        tmp_path / "org" / config.NAME, f"EXTENDS: {ORG / config.NAME}\n{text}"
     )
-    monkeypatch.setattr(config, "ORGANIZATION", path)
+    standards.use(path.parent)
     return path
 
 
-def _title(rule: str) -> str:
-    """A cached rule's title: the Core Guidelines may not be quoted here."""
+def _text(rule: str) -> str:
     entry = standards.rule(rule)
     assert entry is not None
-    return entry.title
+    return entry.text
 
 
 def _installed(tool: str) -> str:
@@ -88,7 +91,7 @@ def test_a_guideline_table_carries_its_fields_and_line(tmp_path: Path) -> None:
         '["house/no-raw-new"]\ntext = "Never call new directly."\n'
         'advisory = true\nchecked_by = ["clang-tidy"]\n'
         'kind = "coding"\n\n'
-        '["cpp-core-guidelines/R.20"]\n'
+        '["some-guide/R.20"]\n'
         'checked_by = ["clang-tidy:cppcoreguidelines-owning-memory"]\n'
         "priority = 1\n",
         "",
@@ -103,12 +106,12 @@ def test_a_guideline_table_carries_its_fields_and_line(tmp_path: Path) -> None:
     )
     assert (house.line, derived.line) == (1, 7)
     assert (derived.key, derived.source, derived.priority) == (
-        "cpp-core-guidelines/R.20",
-        "cpp-core-guidelines",
+        "some-guide/R.20",
+        "some-guide",
         1,
     )
-    assert derived.text == "" and derived.rule == "cpp-core-guidelines/R.20"
-    # The checkers are the aliases of the organization's linters.
+    assert derived.text == "" and derived.rule == "some-guide/R.20"
+    # The checkers are the aliases of the configuration's linters.
     (tool,) = language.tools
     assert (tool.name, tool.linter, tool.role) == (
         "clang-tidy",
@@ -125,7 +128,7 @@ def test_only_the_instance_is_read(
         tmp_path,
         {
             "a.cpp": "",
-            "standards/languages/mine/overlay.toml": '["house/x"]\ntext = "X"\n',
+            "guides/languages/mine/overlay.toml": '["house/x"]\ntext = "X"\n',
         },
     )
     _write(
@@ -146,66 +149,55 @@ def test_languages_activate_by_extension_and_general_always(
     tmp_path: Path,
 ) -> None:
     active = standards.select(
-        standards.load(), ["b.py", "a.hpp", "notes.md", "src/c.cc"], tmp_path
+        standards.load(), ["b.py", "a.hpp", "notes.md", "src/c.cpp"], tmp_path
     )
     assert [a.language for a in active] == ["general", "cpp", "python"]
     assert active[0].reasons == ("always",)
     assert active[1].reasons == (
         "a.hpp ends with .hpp",
-        "src/c.cc ends with .cc",
+        "src/c.cpp ends with .cpp",
     )
-    assert active[1].files == ("a.hpp", "src/c.cc")
-    (guide,) = active[1].guides
-    assert guide["id"] == "cpp-core-guidelines"
-    assert guide["root"] == ".verdog-standards/references/cpp-core-guidelines"
-    assert (
-        "- R: Resource management — 25 rules, 3 checked → R/index.md"
-        in (guide["lines"])
-    )
+    assert active[1].files == ("a.hpp", "src/c.cpp")
+    (guide,) = active[2].guides
+    assert guide["id"] == "sample-style"
+    assert guide["root"] == ".plumbcheck/references/sample-style"
+    assert guide["lines"] == [
+        "- 1: Naming and structure — 2 rules, 2 checked → "
+        "1-naming-and-structure/index.md",
+        "- 2: Documentation — 1 rule, 0 checked → 2-documentation/index.md",
+    ]
     # The general checkers (secrets) see every changed file.
-    assert active[0].files == ("a.hpp", "b.py", "notes.md", "src/c.cc")
+    assert active[0].files == ("a.hpp", "b.py", "notes.md", "src/c.cpp")
+    # A marker activates its language whatever the files.
+    (tmp_path / "example.json").write_text("{}")
+    marked = standards.select(standards.load(), [], tmp_path)
+    assert [a.language for a in marked] == ["general", "example"]
 
 
 def test_every_loop_sees_general_then_its_languages_by_kind(
     tmp_path: Path,
 ) -> None:
     active = standards.select(
-        standards.load(), ["a.cpp", "docs/x.rst"], tmp_path
+        standards.load(), ["a.py", "docs/x.rst"], tmp_path
     )
     design = standards.for_loop(active, "architecture_designer")
-    assert [g["language"] for g in design] == ["general", "cpp", "rst"]
+    assert [g["language"] for g in design] == ["general", "python", "rst"]
     assert [g["key"] for g in design[1]["coding"]] == [
-        "cpp-core-guidelines/R.20",
-        "cpp-core-guidelines/R.1",
-        "cpp-core-guidelines/F.7",
-        "cpp-core-guidelines/I.4",
-        "cpp-core-guidelines/F.16",
-        "cpp-core-guidelines/R.10",
-        "cpp-core-guidelines/ES.49",
-        "cpp-core-guidelines/ES.20",
-        "cpp-core-guidelines/ES.42",
-        "cpp/bug-patterns",
-        "cpp/independent-tests",
+        "sample-style/1.1",
+        "sample-style/1.2",
     ]
-    owner = design[1]["coding"][0]
-    # The rule's title as the cached index has it; never quoted here.
-    title = _title("cpp-core-guidelines/R.20")
-    assert owner["text"] == title and title.startswith("R.20: ")
-    assert owner["enforcement"] == (
-        "[checked by clang-tidy cppcoreguidelines-owning-memory]"
-    )
-    assert owner["pointer"] == (
-        ".verdog-standards/references/cpp-core-guidelines/R/smart/R.20.md"
-    )
-    # About 30 section lines of the guide, and no rule's full text.
-    lines = design[1]["guides"][0]["lines"]
-    assert 25 <= len(lines) <= 35
-    assert not any("##### Reason" in line for line in lines)
-    assert [g["id"] for g in design[2]["guides"]] == [
-        "google-developer-style",
-        "diataxis",
+    assert [g["key"] for g in design[1]["documentation"]] == [
+        "python/docstrings"
     ]
-    assert design[2]["coding"] == [] and len(design[2]["documentation"]) == 16
+    names = design[1]["coding"][0]
+    assert names["text"] == _text("sample-style/1.1")
+    assert names["enforcement"] == "[checked by ruff N*]"
+    assert names["pointer"] == (
+        ".plumbcheck/references/sample-style/1-naming-and-structure/"
+        "1.1-names.md"
+    )
+    assert design[2]["guides"] == [] and design[2]["coding"] == []
+    assert len(design[2]["documentation"]) == 2
     assert standards.for_loop(active, "test_implementer") == design
 
 
@@ -220,7 +212,7 @@ def test_lint_names_every_format_error_with_file_and_line(
         '["house/odd-kind"]\ntext = "T"\nkind = "prose"\n\n'
         '["house/refs"]\ntext = "T"\nlink = "https://x.org"\n'
         'checked_by = ["nosuch:X1"]\ndetails = "missing.md"\n\n'
-        '["google-python/3.16"]\n\n'
+        '["sample-style/1.1"]\n\n'
         '["nowhere"]\ntext = "T"\n',
         '[runner]\nrole = "fixer"\n\n[empty]\nrole = "checker"\n',
         'colour = "red"\n',
@@ -241,10 +233,10 @@ def test_lint_names_every_format_error_with_file_and_line(
             f"{overlay}:15",
             "bad/refs: details file missing.md does not exist.",
         ),
-        (f"{overlay}:21", "'google-python' is no guide of bad."),
+        (f"{overlay}:21", "'sample-style' is no guide of bad."),
         (f"{overlay}:23", "bad/nowhere: the key must be house/<id>"),
         (f"{tools}:1", "bad/runner: role must be one of"),
-        (f"{tools}:4", "checkers are the LINTERS of standards.yml."),
+        (f"{tools}:4", "checkers are the LINTERS of plumbcheck.yml."),
     ):
         assert any(
             e.startswith(f"{where}:") and expected in e for e in errors
@@ -257,11 +249,11 @@ def test_every_overlay_key_names_a_rule_of_the_index(
 ) -> None:
     overlay = _instance(monkeypatch, tmp_path) / "languages/python/overlay.toml"
     overlay.write_text(
-        overlay.read_text() + '\n["google-python/9.99"]\npriority = 9\n'
+        overlay.read_text() + '\n["sample-style/9.99"]\npriority = 9\n'
     )
     assert [e for e in standards.lint_all() if "9.99" in e] == [
         f"{overlay}:{overlay.read_text().count(chr(10)) - 1}: "
-        "google-python/9.99: google-python/9.99 is no rule of google-python."
+        "sample-style/9.99: sample-style/9.99 is no rule of sample-style."
     ]
 
 
@@ -274,60 +266,60 @@ def test_a_toml_syntax_error_names_file_and_line(tmp_path: Path) -> None:
 def test_the_instance_is_well_formed() -> None:
     assert sorted(standards.load()) == [
         "cpp",
+        "example",
         "general",
         "jinja",
         "python",
         "rst",
         "typescript",
-        "verdog",
     ]
     assert standards.lint_all() == []
+    assert standards.source_errors() == []
+    assert not standards.coherence(standards.graph())
+
+
+def test_without_guides_only_general_and_its_checkers_load(
+    tmp_path: Path,
+) -> None:
+    standards.use(tmp_path)
+    assert standards.instance() is None
+    loaded = standards.load()
+    assert list(loaded) == ["general"]
+    assert [t.name for t in loaded["general"].tools] == ["gitleaks"]
+    assert standards.guides() == {} and standards.lint_all() == []
 
 
 def test_the_graph_mirrors_the_files_and_reports_coherence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    instance = _instance(monkeypatch, tmp_path)
     _organization(
         monkeypatch,
         tmp_path,
         "LINTERS:\n  CPP_UNUSED:\n    language: cpp\n    aliases: [unused]\n"
         "    command: 'true'\n",
     )
+    instance = _instance(monkeypatch, tmp_path)
     _language(instance / "languages" / "empty", "")
     monkeypatch.setattr(standards, "LOOPS", ["planner", "feature_implementer"])
     graph = standards.graph()
     kinds = Counter(node.type for node in graph.nodes.values())
-    assert set(kinds) == {
-        "language",
-        "guideline",
-        "tool",
-        "loop",
-        "metric",
-    }
-    raii = graph.nodes["guideline:cpp-core-guidelines/R.1"]
-    assert raii.parent == "language:cpp"
-    # A cache-only guide's text never reaches the map; a committed one's does.
-    assert raii.data["text"] == "" and _title(raii.data["key"]) not in (
-        standards.graph_page(graph, "t")
+    assert set(kinds) == {"language", "guideline", "tool", "loop", "metric"}
+    names = graph.nodes["guideline:sample-style/1.1"]
+    assert names.parent == "language:python"
+    assert "#### 1.1.1 Why" in names.data["section"]
+    assert names.data["license"] == "CC0-1.0"
+    assert names.data["reference"] == (
+        "sample-style/1-naming-and-structure/1.1-names.md"
     )
-    assert raii.data["section"] == "" and raii.data["reference"] == (
-        "cpp-core-guidelines/R/R.1.md"
-    )
-    names = graph.nodes["guideline:google-python/3.16"]
-    assert "#### 3.16.1 Names to Avoid" in names.data["section"]
-    assert names.data["license"] == "CC-BY-3.0"
     assert graph.nodes["tool:cpp/clang-tidy"].parent == "language:cpp"
     edges = {(e.source, e.target, e.type) for e in graph.edges}
-    assert (
-        "guideline:cpp-core-guidelines/R.20",
-        "tool:cpp/clang-tidy",
-        "checked_by",
-    ) in edges
+    assert ("guideline:cpp/owners", "tool:cpp/clang-tidy", "checked_by") in (
+        edges
+    )
     assert ("metric:cc_max", "loop:feature_implementer", "judges") in edges
     assert ("metric:cc_max", "tool:general/radon", "measured_by") in edges
     assert (
-        "guideline:google-python/3.18",
+        "guideline:sample-style/1.2",
         "metric:new complexity",
         "judged_by",
     ) in edges
@@ -345,9 +337,7 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
     page = standards.graph_page(graph, "target")
     data = json.loads(page.split("const DATA = ", 1)[1].split(";\n", 1)[0])
     (node,) = [
-        n
-        for n in data["nodes"]
-        if n["id"] == "guideline:cpp-core-guidelines/R.1"
+        n for n in data["nodes"] if n["id"] == "guideline:sample-style/1.1"
     ]
     assert {
         "key",
@@ -369,7 +359,7 @@ def test_the_graph_mirrors_the_files_and_reports_coherence(
 
 
 def test_the_page_opens_on_the_guidelines_table_with_tabs_and_legend() -> None:
-    page = standards.graph_page(standards.graph(), "auto-se")
+    page = standards.graph_page(standards.graph(), "sample")
     assert 'role="tablist"' in page
     assert re.findall(r'role="tab" id="tab-(\w+)"', page) == [
         "guidelines",
@@ -378,7 +368,7 @@ def test_the_page_opens_on_the_guidelines_table_with_tabs_and_legend() -> None:
         "loops",
     ]
     prompts = {"python": "python/docstrings"}
-    with_prompts = standards.graph_page(standards.graph(), "auto-se", prompts)
+    with_prompts = standards.graph_page(standards.graph(), "sample", prompts)
     data = json.loads(
         with_prompts.split("const DATA = ", 1)[1].split(";\n", 1)[0]
     )
@@ -415,25 +405,20 @@ def test_check_and_show(
     assert capsys.readouterr().out.endswith("7 standards, no problems.\n")
     assert cli.main(["--root", str(root), "show"]) == 0
     shown = capsys.readouterr().out
-    assert (
-        "| general | General | all files | 2 | gitleaks, radon, coverage, "
-        "pytest, ruff, pyright, verdog |"
-    ) in shown
-    assert (
-        "| cpp | C++ | .cpp .cc .cxx .hpp .hh .h .tpp .ipp | 53 | clang-tidy |"
-    ) in shown
+    assert "| general | General | all files | 1 | gitleaks, radon |" in shown
+    assert "| cpp | C++ | .cpp .hpp | 1 | clang-tidy |" in shown
     assert (
         cli.main(["--root", str(root), "show", str(root / "parser.hpp")]) == 0
     )
     shown = capsys.readouterr().out
     assert "cpp: parser.hpp ends with .hpp" in shown
-    assert (
-        f"  cpp-core-guidelines/R.1: {_title('cpp-core-guidelines/R.1')}"
-        in (shown)
-    )
+    assert "  cpp/owners: Give every owning pointer an owner type." in shown
     page = tmp_path / "map.html"
     assert cli.main(["--root", str(root), "show", "--html", str(page)]) == 0
     assert page.read_text().startswith("<!doctype html>")
+    # Without GUIDES there is nothing to check.
+    assert cli.main(["--root", str(tmp_path), "check"]) == 0
+    assert "no GUIDES" in capsys.readouterr().out
 
 
 def test_a_metric_names_only_declared_measurers(
@@ -446,7 +431,7 @@ def test_a_metric_names_only_declared_measurers(
         )
     )
     assert standards.metric_tool_errors() == [
-        "metrics.toml: cc_over_10 is measured by 'lizard', which "
+        "metrics.toml: cc_max is measured by 'lizard', which "
         "general/tools.toml does not declare as a measurer."
     ]
 
@@ -478,26 +463,25 @@ COMPLEX = (
 
 
 def test_types_are_recognised_and_their_configs_synced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    # Offline: the written standards.yml extends the local org file.
-    monkeypatch.setattr(cli, "ORGANIZATION_URL", str(config.ORGANIZATION))
     (tmp_path / "pyproject.toml").write_text("")
     assert cli.types_of(tmp_path) == []
     (tmp_path / "uv.lock").write_text("")
     assert cli.types_of(tmp_path) == ["python-package"]
-    assert cli.sync(tmp_path, check=True) == ["ruff.toml", "pyrightconfig.json"]
-    assert cli.sync(tmp_path, check=False) == [
-        "ruff.toml",
-        "pyrightconfig.json",
-        "standards.yml",
-    ]
-    assert (
-        (tmp_path / "standards.yml")
-        .read_text()
-        .endswith(f"EXTENDS: {config.ORGANIZATION}\n")
-    )
+    # Without a plumbcheck.yml, the defaults' ruff.toml.
+    assert cli.sync(tmp_path, check=True) == ["ruff.toml"]
+    assert cli.sync(tmp_path, check=False) == ["ruff.toml"]
+    defaults = config.DEFAULT_RULES / "ruff.toml"
+    assert (tmp_path / "ruff.toml").read_text() == defaults.read_text()
+    # The organization's file overrides it; its path resolves against it.
+    _write(tmp_path / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
+    assert cli.sync(tmp_path, check=True) == ["ruff.toml"]
+    assert cli.sync(tmp_path, check=False) == ["ruff.toml"]
     assert cli.sync(tmp_path, check=True) == []
+    assert (tmp_path / "ruff.toml").read_text() == (
+        (ORG / "rules" / "ruff.toml").read_text()
+    )
     (tmp_path / "ruff.toml").write_text("line-length = 120\n")
     assert cli.main(["--root", str(tmp_path), "sync", "--check"]) == 1
     # A Verdog project generates its pyproject.toml: no plain package.
@@ -506,46 +490,83 @@ def test_types_are_recognised_and_their_configs_synced(
     assert cli.types_of(tmp_path) == ["verdog-project", "cpp"]
 
 
-def test_a_cached_guide_is_fetched_once_verified_and_copied(
+CACHED = (
+    b'# <a name="s-r"></a>R: Rules\n\n'
+    b'### <a name="r1"></a>R.1: One rule whose title is long enough\n'
+)
+
+
+def _cached_source(instance: Path, data: bytes) -> str:
+    """Add a cache-only guide of ``data`` to ``instance``'s sources.toml."""
+    listing = f"{hashlib.sha256(data).hexdigest()}  g.md\n".encode()
+    entry = (
+        '\n[cached-guide]\ntitle = "Cached guide"\nlanguage = "cpp"\n'
+        'parser = "core-guidelines"\nstore = "cache"\n'
+        'url = "https://example.invalid/{pin}/"\n'
+        'link = "https://example.invalid/guide"\npin = "abc"\n'
+        'files = ["g.md"]\nlevels = [1, 2, 3]\nlicense = "LicenseRef-Private"\n'
+        f'sha256 = "{hashlib.sha256(listing).hexdigest()}"\n'
+    )
+    manifest = instance / "sources.toml"
+    manifest.write_text(manifest.read_text() + entry)
+    return entry
+
+
+def test_a_cached_guide_is_fetched_once_verified_copied_and_never_quoted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     instance = _instance(monkeypatch, tmp_path)
     monkeypatch.setattr(standards, "CACHE", tmp_path / "cache")
-    data = b'# <a name="s-r"></a>R: Rules\n\n### <a name="r1"></a>R.1: One\n'
-    manifest = instance / "sources.toml"
-    pinned = manifest.read_text()
-    digest = __import__("hashlib").sha256(data).hexdigest()
-    listing = f"{digest}  CppCoreGuidelines.md\n".encode()
-    manifest.write_text(
-        re.sub(
-            r'sha256 = "\w+"',
-            f'sha256 = "{__import__("hashlib").sha256(listing).hexdigest()}"',
-            pinned,
-            count=1,
-        )
+    entry = _cached_source(instance, CACHED)
+    overlay = instance / "languages/cpp/overlay.toml"
+    overlay.write_text(
+        overlay.read_text()
+        + '\n["cached-guide/R.1"]\nchecked_by = ["clang-tidy"]\npriority = 2\n'
     )
-    (instance / "languages/cpp/overlay.toml").write_text("")
     calls: list[str] = []
 
     def download(url: str) -> bytes:
         calls.append(url)
-        return data
+        return CACHED
 
     monkeypatch.setattr(standards.sources, "_download", download)
-    source = standards.guides()["cpp-core-guidelines"]
+    source = standards.guides()["cached-guide"]
     folder = standards.tree(source)
     assert folder.is_relative_to(tmp_path / "cache")
-    assert (folder / "R/R.1.md").read_text().endswith("R.1: One\n")
+    assert (folder / "R/R.1.md").read_text().endswith("enough\n")
     assert standards.tree(source) == folder and len(calls) == 1
     standards.copy_references(tmp_path / "worktree")
     copied = tmp_path / "worktree" / standards.WORKTREE_REFERENCES
-    assert (copied / "cpp-core-guidelines/R/R.1.md").is_file()
-    assert not (copied / "cpp-core-guidelines/source").exists()
-    assert (copied / "google-python/index.md").is_file()
+    assert (copied / "cached-guide/R/R.1.md").is_file()
+    assert not (copied / "cached-guide/source").exists()
+    assert (copied / "sample-style/index.md").is_file()
+    # Its rules' text stays out of reports and the map.
+    (owner,) = [
+        g
+        for g in standards.load()["cpp"].guidelines
+        if g.id == "cached-guide/R.1"
+    ]
+    line = standards.rule_line(owner, tmp_path)
+    assert line.startswith("- cached-guide/R.1: cached-guide/R.1 [")
+    assert "long enough" not in line
+    node = standards.graph().nodes["guideline:cached-guide/R.1"]
+    assert node.data["text"] == "" and node.data["section"] == ""
+    # A tracked file that quotes a rule's title fails the check.
+    _git(tmp_path, "init", "-q")
+    _write(tmp_path / "notes.md", "One rule whose title is long enough\n")
+    _git(tmp_path, "add", "notes.md")
+    assert standards.committed_cache_errors() == [
+        "notes.md: cached-guide allows no public copy; never commit it or "
+        "quote its rules."
+    ]
+    # A copy that is not the pinned one fails.
     shutil.rmtree(folder)
-    manifest.write_text(pinned)
+    manifest = instance / "sources.toml"
+    pinned = re.search(r'sha256 = "(\w+)"\n$', entry)
+    assert pinned is not None
+    manifest.write_text(manifest.read_text().replace(pinned[1], "0" * 64))
     with pytest.raises(ValueError, match="not the pinned"):
-        standards.tree(standards.guides()["cpp-core-guidelines"])
+        standards.tree(standards.guides()["cached-guide"])
 
 
 def _ran(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[int, list[str]]:
@@ -612,11 +633,8 @@ def test_siblings_are_the_uv_path_sources_next_to_the_repository(
 
 
 def test_coverage_counts_checked_rules_and_names_unmapped_checks(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    python = _instance(monkeypatch, tmp_path) / "languages" / "python"
     _organization(
         monkeypatch,
         tmp_path,
@@ -624,17 +642,17 @@ def test_coverage_counts_checked_rules_and_names_unmapped_checks(
         "    aliases: [lister]\n    command: 'true'\n"
         "    list: printf 'N802\\nZ999\\n'\n    link: https://x.org\n",
     )
+    python = _instance(monkeypatch, tmp_path) / "languages" / "python"
     overlay = python / "overlay.toml"
     overlay.write_text(
         overlay.read_text().replace(
             'checked_by = ["ruff:N*"]', 'checked_by = ["ruff:N*", "lister:N*"]'
         )
     )
-    assert cli.main(["show", "--coverage"]) == 0
-    shown = capsys.readouterr().out
-    assert "## Google Python Style Guide (`google-python`, CC-BY-3.0)" in shown
-    assert "| 3 Python Style Rules | 18 | 3 | 15 |" in shown
-    assert "| R: Resource management | 25 | 3 | 22 |" in shown
+    shown = standards.coverage()
+    assert "## Sample style guide (`sample-style`, CC0-1.0)" in shown
+    assert "| 1 Naming and structure | 2 | 2 | 0 |" in shown
+    assert "| 2 Documentation | 1 | 0 | 1 |" in shown
     assert "- python/lister: Z999 maps to no guideline; see https://x.org" in (
         shown
     )

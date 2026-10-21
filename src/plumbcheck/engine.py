@@ -1,14 +1,14 @@
-"""The engine of the organization's standards: load, select, map.
+"""The guides of a configuration: load, select, map.
 
-The instance is the folder ``standards/`` of ``verdog-ai/standards``, which the
-user selects and no loop changes; this module only interprets it. Each
+The instance is the folder the configuration's ``GUIDES`` names (none by
+default), which its organization selects; this module only interprets it. Each
 language has a folder ``languages/<language>/`` with ``language.toml`` (title,
 extensions, project marker, test globs) and ``overlay.toml`` (what it adds to
 the rules of its guides, and its house rules). ``general/`` holds the house
 rules for every repository and ``tools.toml``, the measurers of
 ``metrics.toml``; ``sources.toml`` names the guides the guidelines derive from
-(see ``sources``). The checkers are the ``LINTERS`` of ``standards.yml``, run
-by ``linting``.
+(see ``sources``). The checkers are the ``LINTERS`` of ``plumbcheck.yml``,
+run by ``linting``.
 
 A guideline is a rule of a guide, named by its index id
 (``cpp-core-guidelines/R.20``) and curated in the overlay, or a house rule
@@ -38,20 +38,16 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, cast
 
-from verdog_standards import config, sources
+from plumbcheck import config, sources
 
-# The instance: everything repositories follow and are judged by.
-STANDARDS: Path = Path(
-    os.environ.get("VERDOG_STANDARDS") or config.data("standards")
-)
 # What a consumer adds on top, never changing the rules: roots with extra
 # ``<kind>.toml`` tables and ``general/tools.toml`` tools, its loop names and
 # extra ``check`` errors.
 LAYERS: list[Path] = []
 LOOPS: list[str] = []
 CHECKS: list[Callable[[], list[str]]] = []
-CACHE: Final = Path("~/.cache/verdog-standards")
-BIN: Final = CACHE / "bin"  # the tools ``verdog-standards install`` downloads
+CACHE: Path = Path("~/.cache/plumbcheck")
+BIN: Final = CACHE / "bin"  # the tools ``plumbcheck install`` downloads
 LANGUAGES: Final = "languages"
 GENERAL: Final = "general"
 MANIFEST_NAME: Final = sources.MANIFEST
@@ -91,10 +87,46 @@ HOUSE: Final = "house"  # the overlay's own rules: ``house/<id>``
 REFERENCES: Final = "references"
 SECTION_CHARS: Final = 4000  # of a rule's text, shown on the map
 # Where a target repository's worktree gets the pinned guides it may read.
-WORKTREE_REFERENCES: str = (
-    ".verdog-standards/references"  # a consumer may move it
-)
+WORKTREE_REFERENCES: str = ".plumbcheck/references"  # a consumer may move it
 TOOL_FIELDS: Final = {"role": str, "link": str}
+
+
+@dataclass
+class InUse:
+    """The configuration in use and its instance, the folder ``GUIDES`` names.
+
+    ponytail: one per process, that of the last repository used; the
+    repositories of one organization share it.
+    """
+
+    settings: config.Config = field(default_factory=dict[str, Any])
+    guides: Path | None = None
+    read: bool = False
+
+
+IN_USE: Final = InUse()
+
+
+def use(root: Path) -> config.Config:
+    """Read ``root``'s configuration; its ``GUIDES`` become the instance."""
+    found = config.load(root)
+    guides = found.get("GUIDES")
+    IN_USE.settings, IN_USE.read = found, True
+    IN_USE.guides = Path(guides) if guides else None
+    return found
+
+
+def instance() -> Path | None:
+    """The instance; the working directory's configuration until ``use``."""
+    if not IN_USE.read:
+        use(Path.cwd())
+    return IN_USE.guides
+
+
+def configuration() -> config.Config:
+    """The configuration in use."""
+    instance()
+    return IN_USE.settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +180,7 @@ class Guideline:
 class Tool:
     """One tool: a checker, a retriever of context or a measurer of metrics.
 
-    A checker is an alias of a linter of ``standards.yml``; measurers are
+    A checker is an alias of a linter of ``plumbcheck.yml``; measurers are
     declared in ``tools.toml`` and run by their consumer's own code, such as
     auto-se's gate.
     """
@@ -198,6 +230,13 @@ class Activation:
 
 
 type Standards = dict[str, Language]
+
+
+def _root() -> Path:
+    """The instance, which a guide exists only in."""
+    root = instance()
+    assert root is not None, "a guide exists only in an instance"
+    return root
 
 
 def search_path() -> str:
@@ -310,7 +349,7 @@ def _tool(
     if role not in ROLES:
         errors.append(
             f"{language}/{name}: role must be one of {ROLES}; checkers are "
-            "the LINTERS of standards.yml"
+            "the LINTERS of plumbcheck.yml"
         )
     return Tool(
         language=language,
@@ -329,10 +368,9 @@ def _tool(
 
 
 def checkers(language: str) -> tuple[Tool, ...]:
-    """The aliases of the organization's linters of ``language``."""
+    """The aliases of the configuration's linters of ``language``."""
     linters = cast(
-        dict[str, dict[str, Any]],
-        config.resolve(str(config.ORGANIZATION)).get("LINTERS", {}),
+        dict[str, dict[str, Any]], configuration().get("LINTERS", {})
     )
     return tuple(
         Tool(
@@ -341,7 +379,7 @@ def checkers(language: str) -> tuple[Tool, ...]:
             linter=key,
             link=str(spec.get("link", "")),
             list=str(spec.get("list", "")),
-            path=str(config.ORGANIZATION),
+            path=config.NAME,
         )
         for key, spec in linters.items()
         if spec.get("language") == language
@@ -382,10 +420,19 @@ def parse(folder: Path, name: str) -> Language:
 
 
 def load() -> Standards:
-    """Every language of the instance, and ``general``."""
-    folders = sorted(p for p in (STANDARDS / LANGUAGES).glob("*") if p.is_dir())
+    """Every language of the instance, and ``general`` (also without one)."""
+    root = instance()
+    folders = (
+        sorted(p for p in (root / LANGUAGES).glob("*") if p.is_dir())
+        if root
+        else []
+    )
     found = {p.name: parse(p, p.name) for p in folders}
-    general = parse(STANDARDS / GENERAL, GENERAL)
+    general = (
+        parse(root / GENERAL, GENERAL)
+        if root
+        else Language(GENERAL, "General", "", tools=checkers(GENERAL))
+    )
     for layer in LAYERS:
         extra = parse(layer / GENERAL, GENERAL)
         general = replace(general, tools=general.tools + extra.tools)
@@ -396,7 +443,8 @@ def load() -> Standards:
 def declarations(kind: str) -> dict[str, dict[str, Any]]:
     """The tables of ``<kind>.toml`` at the instance's root and the layers'."""
     found: dict[str, dict[str, Any]] = {}
-    for root in (STANDARDS, *LAYERS):
+    roots = [r for r in (instance(), *LAYERS) if r]
+    for root in roots:
         path = root / f"{kind}.toml"
         if path.is_file():
             found.update(tomllib.loads(path.read_text()))
@@ -473,7 +521,8 @@ def select(
 
 def guides() -> dict[str, sources.Source]:
     """The guides of ``sources.toml``, by id."""
-    return sources.manifest(STANDARDS)
+    root = instance()
+    return sources.manifest(root) if root else {}
 
 
 def curations(source: sources.Source) -> dict[str, tuple[str, ...]]:
@@ -490,7 +539,7 @@ def _render(
     source: sources.Source,
 ) -> tuple[Path, dict[str, str], list[sources.Rule]]:
     """The folder, files and index of ``source``'s tree, from its copy."""
-    folder = sources.tree_folder(source, STANDARDS, CACHE)
+    folder = sources.tree_folder(source, _root(), CACHE)
     copy = sources.fetch(source, folder)
     files, rules = sources.render(source, copy, curations(source))
     return folder, files, rules
@@ -521,7 +570,7 @@ def tree(source: sources.Source) -> Path:
     A cached tree is generated on first use and again when the generator or
     the overlay changed; a committed one is as committed.
     """
-    folder = sources.tree_folder(source, STANDARDS, CACHE)
+    folder = sources.tree_folder(source, _root(), CACHE)
     if source.store == "cache":
         stamp = folder / STAMP
         if not stamp.is_file() or stamp.read_text() != _stamp(source):
@@ -563,9 +612,9 @@ def location(
     copied = Path(WORKTREE_REFERENCES, source.id)
     if (root / copied).is_dir():
         return (copied / path).as_posix()
-    folder = sources.tree_folder(source, STANDARDS, CACHE)
-    if source.store == "commit" and folder.is_relative_to(STANDARDS.parent):
-        mine = folder.relative_to(STANDARDS.parent)
+    folder = sources.tree_folder(source, _root(), CACHE)
+    if source.store == "commit" and folder.is_relative_to(_root().parent):
+        mine = folder.relative_to(_root().parent)
         if (root / mine).is_dir():
             return (mine / path).as_posix()
     return (
@@ -595,7 +644,7 @@ def copy_references(root: Path) -> None:
 def source_errors() -> list[str]:
     """Guides whose copy, completeness or committed tree is wrong.
 
-    A committed tree must equal what ``verdog-standards index`` generates; a
+    A committed tree must equal what ``plumbcheck index`` generates; a
     cached guide must never be committed.
     """
     errors: list[str] = []
@@ -617,7 +666,7 @@ def _tree_errors(source: sources.Source) -> list[str]:
         [
             f"{source.id}: {len(found)} generated files differ from the "
             f"source and overlay, such as {found[0]}; run "
-            "`verdog-standards index`."
+            "`plumbcheck index`."
         ]
         if found
         else []
@@ -625,20 +674,51 @@ def _tree_errors(source: sources.Source) -> list[str]:
 
 
 def committed_cache_errors() -> list[str]:
-    """Files of the repository that hold a cache-only guide or its tree."""
+    """Files of the repository that hold a cache-only guide or quote it.
+
+    A file quotes a guide when it holds one of its rules' titles (those of
+    more than ``QUOTED_CHARS`` characters); only its path is reported, so no
+    public log repeats the guide's text.
+    """
+    top = _root().parent
     listed = subprocess.run(
-        ["git", "-C", str(STANDARDS.parent), "ls-files"],
-        capture_output=True,
-        text=True,
+        ["git", "-C", str(top), "ls-files"], capture_output=True, text=True
     )
     tracked = listed.stdout.splitlines() if listed.returncode == 0 else []
-    cached = [s for s in guides().values() if s.store == "cache"]
-    return [
-        f"{path}: {source.id} allows no public copy; never commit it."
-        for path in tracked
-        for source in cached
-        if source.id in Path(path).parts or Path(path).name in source.files
-    ]
+    errors: list[str] = []
+    for source in (s for s in guides().values() if s.store == "cache"):
+        quoted = _titles(source)
+        for path in tracked:
+            held = source.id in Path(path).parts or Path(path).name in (
+                source.files
+            )
+            if held or (quoted and quoted.search(_text(top / path))):
+                errors.append(
+                    f"{path}: {source.id} allows no public copy; never "
+                    "commit it or quote its rules."
+                )
+    return errors
+
+
+QUOTED_CHARS: Final = 24
+
+
+def _titles(source: sources.Source) -> re.Pattern[str] | None:
+    """A pattern of the titles of ``source``'s rules, if its tree is here."""
+    try:
+        rules = index(source).values()
+    except (OSError, ValueError):
+        return None  # ponytail: offline and not cached; only paths are checked
+    titles = {r.title.partition(": ")[2] for r in rules}
+    long = sorted(t for t in titles if len(t) > QUOTED_CHARS)
+    return re.compile("|".join(map(re.escape, long))) if long else None
+
+
+def _text(path: Path) -> str:
+    """A tracked file's text, or "" for a large or missing one."""
+    if not path.is_file() or path.stat().st_size > 4_000_000:
+        return ""
+    return path.read_text(errors="ignore")
 
 
 def _marked(standards: Standards, root: Path) -> list[str]:
@@ -750,20 +830,10 @@ def generated(root: Path) -> set[str]:
     return {s["path"] for s in sources if s.get("ownership") == "generated"}
 
 
-def _references(paths: Iterable[str]) -> set[str]:
-    """The pinned guides of the instance; they keep their authors' style."""
-    return {
-        path
-        for path in paths
-        if Path(path).parts[:1] == ("standards",)
-        and REFERENCES in Path(path).parts
-    }
-
-
 def authored(root: Path, changed: Iterable[str]) -> set[str]:
-    """The files still present that are neither generated nor guides."""
+    """The files still present that are not generated."""
     present = {p for p in changed if (root / p).is_file()}
-    return present - generated(root) - _references(present)
+    return present - generated(root)
 
 
 def rule_line(g: Guideline, root: Path) -> str:
@@ -944,7 +1014,10 @@ def _unmapped(language: Language) -> list[str]:
 
 def _listed(tool: Tool) -> list[str]:
     """The checks ``tool.list`` prints, one per line."""
-    values = {"python": sys.executable, "rules": str(config.RULES)}
+    values = {
+        "python": sys.executable,
+        "rules": str(config.rules(configuration())),
+    }
     result = subprocess.run(
         shlex.split(tool.list.format_map(values)),
         capture_output=True,

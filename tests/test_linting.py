@@ -1,16 +1,20 @@
-"""standards.yml, the linters, and the Claude Code and Codex hooks."""
+"""plumbcheck.yml, the linters, and the Claude Code and Codex hooks."""
 
+import gzip
 import io
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from verdog_standards import cli, config, engine, hooks, linting
+from plumbcheck import cli, config, engine, hooks, linting
+
+ORG = Path(__file__).parent / "fixtures" / "org"
 
 CLEAN = '''"""A module."""
 
@@ -47,11 +51,18 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _repository(tmp_path: Path, contents: dict[str, str]) -> tuple[Path, str]:
-    """A committed repository with the organization's ruff.toml."""
+def _repository(
+    tmp_path: Path, contents: dict[str, str], *, configured: bool = True
+) -> tuple[Path, str]:
+    """A committed repository of the sample organization, its ruff.toml synced.
+
+    Without ``configured``, it has no plumbcheck.yml.
+    """
     root = tmp_path / "repository"
     root.mkdir()
-    shutil.copy(config.RULES / "ruff.toml", root)
+    if configured:
+        shutil.copy(ORG / "rules" / "ruff.toml", root)
+        _write(root / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
     for path, text in contents.items():
         _write(root / path, text)
     _git(root, "init", "-q")
@@ -64,7 +75,7 @@ def _rules(found: linting.Result) -> set[tuple[str, str, str]]:
     return {(f.path, f.linter, f.rule) for f in found.findings}
 
 
-# --- standards.yml
+# --- plumbcheck.yml
 
 
 def test_later_files_win_mappings_merge_and_named_lists_append(
@@ -95,26 +106,79 @@ def test_an_extended_url_is_fetched_once(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     fetched: list[str] = []
 
-    def urlopen(url: str, timeout: int) -> io.BytesIO:
-        del timeout
+    def download(url: str) -> bytes:
         fetched.append(url)
-        return io.BytesIO(b"A: 1\nB: 1\n")
+        return b"A: 1\nB: 1\n"
 
-    monkeypatch.setattr(config.urllib.request, "urlopen", urlopen)
-    url = "https://example.org/x/standards.yml"
-    own = _write(tmp_path / "standards.yml", f"EXTENDS: {url}\nB: 2\n")
-    assert config.load(tmp_path) == {"A": 1, "B": 2}
+    monkeypatch.setattr(config, "_download", download)
+    url = "https://example.org/x/plumbcheck.yml"
+    own = _write(tmp_path / config.NAME, f"EXTENDS: {url}\nB: 2\n")
+    loaded = config.load(tmp_path)
+    assert (loaded["A"], loaded["B"]) == (1, 2) and "LINTERS" in loaded
     assert config.resolve(str(own)) == {"A": 1, "B": 2}
     assert fetched == [url]
 
 
-def test_a_repository_without_its_own_file_gets_the_organization_s(
+def _archive(files: dict[str, str]) -> bytes:
+    """A GitHub tarball: every file under one top folder."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, text in files.items():
+            data = text.encode()
+            member = tarfile.TarInfo(f"org-abc/{name}")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return gzip.compress(buffer.getvalue())
+
+
+def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    fetched: list[str] = []
+    data = _archive(
+        {
+            "plumbcheck.yml": "EXTENDS: base.yml\nRULES: rules\nFILES:\n"
+            "  python-package: {ruff.toml: rules/ruff.toml}\n",
+            "base.yml": "GUIDES: guides\n",
+            "rules/ruff.toml": "line-length = 70\n",
+        }
+    )
+
+    def download(url: str) -> bytes:
+        fetched.append(url)
+        return data
+
+    monkeypatch.setattr(config, "_download", download)
+    url = "https://raw.githubusercontent.com/o/org/abc/plumbcheck.yml"
+    _write(tmp_path / config.NAME, f"EXTENDS: {url}\n")
+    loaded = config.load(tmp_path)
+    snapshot = tmp_path / "home/.cache/plumbcheck/extends/o/org/abc"
+    assert loaded["RULES"] == str(snapshot / "rules")
+    assert loaded["GUIDES"] == str(snapshot / "guides")
+    assert loaded["FILES"]["python-package"]["ruff.toml"] == str(
+        snapshot / "rules/ruff.toml"
+    )
+    # The defaults' other types stay.
+    assert "typescript" in loaded["FILES"]
+    (tmp_path / "pyproject.toml").write_text("")
+    (tmp_path / "uv.lock").write_text("")
+    assert cli.sync(tmp_path, check=False) == ["ruff.toml"]
+    assert (tmp_path / "ruff.toml").read_text() == "line-length = 70\n"
+    config.load(tmp_path)
+    assert fetched == ["https://codeload.github.com/o/org/tar.gz/abc"]
+
+
+def test_a_repository_without_its_own_file_gets_the_defaults(
     tmp_path: Path,
 ) -> None:
-    linters = config.linters(config.load(tmp_path))
+    found = config.load(tmp_path)
+    linters = config.linters(found)
     assert "PYTHON_RUFF" in linters and "CPP_CLANG_TIDY" in linters
     # Run by the project's commands, not by ``lint``.
     assert "TYPESCRIPT_TSC" not in linters
+    assert config.rules(found) == config.DEFAULT_RULES
+    assert "GUIDES" not in found
 
 
 def test_overrides_enable_disable_filter_and_add_arguments() -> None:
@@ -214,10 +278,10 @@ def test_every_finding_of_a_checked_file_counts(tmp_path: Path) -> None:
     (error,) = linting.lint_errors(root, base)
     assert error.startswith("new.py has 2 findings;")
     assert "  new.py:17: PYTHON_RUFF:N802 Function name" in error
-    assert "    - google-python/3.16: Name modules" in error
+    assert "    - sample-style/1.1: 1.1 Names: Name functions" in error
 
 
-def test_guides_generated_deleted_and_test_files_need_no_docstrings(
+def test_generated_deleted_and_test_files_need_no_docstrings(
     tmp_path: Path,
 ) -> None:
     root, _ = _repository(
@@ -228,15 +292,31 @@ def test_guides_generated_deleted_and_test_files_need_no_docstrings(
             )
         },
     )
-    guide = "standards/languages/python/references/x.py"
-    _write(root / guide, VIOLATION)
     _write(root / "gen.py", VIOLATION)
     _write(
         root / "tests" / "test_a.py",
         CLEAN + "\n\ndef test_b() -> None:\n    pass\n",
     )
-    found = linting.lint(root, [guide, "gen.py", "gone.py", "tests/test_a.py"])
+    found = linting.lint(root, ["gen.py", "gone.py", "tests/test_a.py"])
     assert found.findings == [] and found.problems == []
+
+
+def test_a_linter_s_config_is_the_repository_s_the_rules_or_the_defaults(
+    tmp_path: Path,
+) -> None:
+    root, _ = _repository(tmp_path, {})
+    engine.use(root)
+
+    def flags(name: str) -> list[str]:
+        spec: dict[str, Any] = {"command": "x", "arguments": []}
+        spec["config"] = {"file": name, "flag": "-c"}
+        return linting._command(root, spec, "command")[1:]  # pyright: ignore[reportPrivateUsage]
+
+    assert flags("ruff.toml") == ["-c", str(root / "ruff.toml")]
+    assert flags(".vale.ini") == ["-c", str(config.DEFAULT_RULES / ".vale.ini")]
+    assert flags(".missing") == []
+    (root / "ruff.toml").unlink()
+    assert flags("ruff.toml") == ["-c", str(ORG / "rules" / "ruff.toml")]
 
 
 def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
@@ -246,7 +326,7 @@ def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
     assert linting.lint(root, ["a.cpp", "a.ts"]).problems == [
         "TYPESCRIPT_ESLINT needs node_modules/.bin/eslint: run `npm ci` first",
         "CPP_CLANG_TIDY needs build/standards/compile_commands.json: "
-        "configure first (`verdog-standards run` creates it)",
+        "configure first (`plumbcheck run` creates it)",
     ]
 
 
@@ -287,7 +367,7 @@ FIRES = [
     ("PYTHON_JINJA_ENVIRONMENT", "a.py", "import jinja2\n\nT = jinja2.Environment()\n", True),
     ("JINJA_TAGS", "a.j2", "{% if a %}{% if b %}\nx\n{% endif %}{% endif %}\n", True),
     ("RST_DOC8", "a.rst", "The gate measures the change.   \n", True),
-    ("SPELL_VALE", "a.rst", "The change is measured by the gate.\n", True),
+    ("SPELL_VALE", "a.rst", "The gate is is ready.\n", True),
     ("SPELL_CODESPELL", "a.rst", "The gate measures teh change.\n", True),
     ("TYPESCRIPT_ESLINT", "a.ts", "var count = 1;\nexport const same = count;\n", True),
     ("CPP_CLANG_TIDY", "a.cpp", "struct N {};\nN* make() { return new N; }\n", True),
@@ -373,20 +453,6 @@ def test_each_linter_flags_a_violation_its_guidelines_map(
         ), mine
 
 
-def test_a_cache_only_guide_s_rule_text_stays_out_of_the_report() -> None:
-    (owner,) = [
-        g
-        for g in engine.load()["cpp"].guidelines
-        if g.id == "cpp-core-guidelines/R.20"
-    ]
-    line = engine.rule_line(owner, Path.cwd())
-    entry = engine.rule(owner.id)
-    assert line.startswith(
-        "- cpp-core-guidelines/R.20: cpp-core-guidelines/R.20 ["
-    )
-    assert entry is None or entry.title not in line
-
-
 def test_the_base_is_the_merge_base_with_origin_main_without_origin_head(
     tmp_path: Path,
 ) -> None:
@@ -408,16 +474,15 @@ def test_a_complex_function_cites_the_function_length_rule(
     _write(root / "a.py", CLEAN + complex_)
     (error,) = linting.lint_errors(root, base)
     assert "PYTHON_RUFF:C901" in error
-    assert "google-python/3.18" in error
+    assert "sample-style/1.2" in error
 
 
 # --- hooks
 
 
 def _hooked(tmp_path: Path, contents: dict[str, str]) -> tuple[Path, str]:
-    """A repository the hooks act in: it extends the organization's file."""
-    own = f"EXTENDS: {config.ORGANIZATION}\n"
-    return _repository(tmp_path, {**contents, config.NAME: own})
+    """A repository the hooks act in: it has a plumbcheck.yml."""
+    return _repository(tmp_path, contents)
 
 
 def test_a_patch_names_its_added_updated_and_moved_files() -> None:
@@ -477,7 +542,7 @@ def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
         "after 2 blocked attempts" in json.loads(third.stdout)["systemMessage"]
     )
     counters = Path(_git(root, "rev-parse", "--absolute-git-dir").strip())
-    assert not list((counters / "verdog-standards").iterdir())
+    assert not list((counters / "plumbcheck").iterdir())
     # A new turn starts counting again.
     assert hooks.stop(again, check).code == 2
     assert hooks.stop(claude, check).code == 2
@@ -489,12 +554,14 @@ def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
     assert hooks.stop(claude, check) == hooks.Reply()
 
 
-def test_hooks_act_only_with_a_standards_yml_and_not_when_off(
+def test_hooks_act_only_with_a_plumbcheck_yml_and_not_when_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "plain").mkdir()
     (tmp_path / "hooked").mkdir()
-    root, _ = _repository(tmp_path / "plain", {"a.py": VIOLATION})
+    root, _ = _repository(
+        tmp_path / "plain", {"a.py": VIOLATION}, configured=False
+    )
     hooked, _ = _hooked(tmp_path / "hooked", {"a.py": VIOLATION})
 
     def check(found: Path) -> list[str]:
@@ -516,7 +583,7 @@ def test_hooks_act_only_with_a_standards_yml_and_not_when_off(
     assert hooks.post_edit({**payloads(hooked)[0], "cwd": str(root)}).code == 2
     edit, codex = payloads(hooked)
     assert hooks.stop(codex, check).stdout != "{}"
-    monkeypatch.setenv("VERDOG_STANDARDS_HOOKS", "off")
+    monkeypatch.setenv("PLUMBCHECK_HOOKS", "off")
     assert hooks.post_edit(edit) == hooks.Reply()
     assert hooks.stop(codex, check) == hooks.Reply(stdout="{}")
 
@@ -586,10 +653,8 @@ def test_hooks_install_is_idempotent_and_keeps_other_hooks(
     assert written["model"] == "m"
     post, stop = written["hooks"]["PostToolUse"], written["hooks"]["Stop"]
     assert post[0] == other and post[1]["matcher"] == "Edit|Write|MultiEdit"
-    assert (
-        post[1]["hooks"][0]["command"] == "/bin/verdog-standards hook post-edit"
-    )
-    assert stop[0]["hooks"][0]["command"] == "/bin/verdog-standards hook stop"
+    assert post[1]["hooks"][0]["command"] == "/bin/plumbcheck hook post-edit"
+    assert stop[0]["hooks"][0]["command"] == "/bin/plumbcheck hook stop"
     codex = json.loads((tmp_path / ".codex" / "hooks.json").read_text())
     assert codex["hooks"]["PostToolUse"][0]["matcher"] == "apply_patch"
     assert len(codex["hooks"]["Stop"]) == 1
@@ -622,3 +687,42 @@ def test_a_failing_hook_reports_without_blocking(
     monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
     assert hooks.run("stop") == 1
     assert "boom" in capsys.readouterr().err
+
+
+def test_hooks_install_replaces_the_hooks_of_the_earlier_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def old(event: str) -> dict[str, Any]:
+        line = f"/old/verdog-standards hook {event}"
+        return {"hooks": [{"type": "command", "command": line}]}
+
+    other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}
+    hooked = {"PostToolUse": [other, old("post-edit")], "Stop": [old("stop")]}
+    settings = _write(
+        tmp_path / ".claude" / "settings.json", json.dumps({"hooks": hooked})
+    )
+
+    def which(name: str) -> str:
+        return f"/bin/{name}"
+
+    monkeypatch.setattr(hooks.shutil, "which", which)
+    assert "/old/verdog-standards" in hooks.install(
+        tmp_path, claude=True, codex=False
+    )
+    written = json.loads(settings.read_text())["hooks"]
+    commands = [
+        h["command"] for e in written.values() for g in e for h in g["hooks"]
+    ]
+    assert commands == [
+        "x",
+        "/bin/plumbcheck hook post-edit",
+        "/bin/plumbcheck hook stop",
+    ]
+
+
+def test_without_guides_a_finding_names_the_linter_s_documentation(
+    tmp_path: Path,
+) -> None:
+    root, _ = _repository(tmp_path, {"a.py": "import os\n"}, configured=False)
+    (error,) = linting.report(root, linting.lint(root, ["a.py"]))
+    assert "    - see https://docs.astral.sh/ruff/rules/" in error.splitlines()
