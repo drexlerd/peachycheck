@@ -593,3 +593,32 @@ def test_hooks_install_is_idempotent_and_keeps_other_hooks(
     codex = json.loads((tmp_path / ".codex" / "hooks.json").read_text())
     assert codex["hooks"]["PostToolUse"][0]["matcher"] == "apply_patch"
     assert len(codex["hooks"]["Stop"]) == 1
+
+
+def test_base_of_a_lone_commit_is_the_empty_tree(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-qm", "init"],
+        check=True,
+    )  # fmt: skip
+    assert cli.base_of(tmp_path) == cli.EMPTY_TREE
+    assert linting.changed_files(tmp_path, cli.EMPTY_TREE) == ["a.py"]
+
+
+def test_a_failing_hook_reports_without_blocking(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken(payload: dict[str, Any]) -> hooks.Reply:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(hooks, "stop", broken)
+    codex = json.dumps({"turn_id": "t", "hook_event_name": "Stop"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(codex))
+    assert hooks.run("stop") == 0
+    assert "boom" in json.loads(capsys.readouterr().out)["systemMessage"]
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert hooks.run("stop") == 1
+    assert "boom" in capsys.readouterr().err
