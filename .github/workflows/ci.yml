@@ -9,11 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  # plumbcheck checks itself with the commit under test.
+  # plumbcheck checks itself with the action and the code under test.
   plumbcheck:
-    uses: ./.github/workflows/check.yml
-    with:
-      version: ${{ github.event.pull_request.head.sha || github.sha }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./
   # Every linter runs on a fixture and its finding parses.
   linters:
     runs-on: ubuntu-latest

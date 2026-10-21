@@ -47,31 +47,45 @@ plumbcheck upgrade [--to 0.2.0]    # later: move it to another version
 1. `plumbcheck.yml`, extending `--extends` (your organization's file, if
    any) and pinning `PLUMBCHECK_VERSION`: the installed release, or the
    installed commit for a git install;
-2. `.github/workflows/plumbcheck.yml`, which calls the reusable workflow
-   below (with `secrets: inherit` when the repository has a `.gitmodules`);
+2. `.github/workflows/plumbcheck.yml`, a job that runs the action below
+   (passing `SUBMODULES_TOKEN` when the repository has a `.gitmodules`);
 3. the shared tool configurations (`sync`) and the pinned vale and gitleaks
    (`install`);
 4. for a Python project with a `pyproject.toml`, `plumbcheck==<version>` in
    the `dev` dependency group (`uv add --dev`), when installed from PyPI.
 
-`upgrade` moves `PLUMBCHECK_VERSION`, the reusable workflow's ref in
-`.github/workflows/` and an existing dev pin to the installed version (or
-`--to VERSION`) and syncs the configurations again.
+`upgrade` moves `PLUMBCHECK_VERSION`, the refs of the action and the
+reusable workflow in `.github/workflows/` and an existing dev pin to the
+installed version (or `--to VERSION`) and syncs the configurations again.
 
 ### CI
+
+The action (`action.yml`) is the check as one step of a job:
+
+```yaml
+jobs:
+  plumbcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: drexlerd/plumbcheck@v0.1.0
+        # with:
+        #   version: 0.1.0                          # see below
+        #   token: ${{ secrets.SUBMODULES_TOKEN }}  # private submodules/siblings
+```
+
+The reusable workflow does the same in three lines:
 
 ```yaml
 jobs:
   plumbcheck:
     uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0
-    # with:
-    #   version: 0.1.0     # default: PLUMBCHECK_VERSION of plumbcheck.yml
-    # secrets: inherit     # SUBMODULES_TOKEN for private submodules/siblings
+    secrets: inherit
 ```
 
-The workflow installs plumbcheck (the `version` input, else the repository's
-`PLUMBCHECK_VERSION`, else the latest commit; a version such as `0.1.0` comes
-from PyPI, anything else is a git ref of this repository), then fails when
+It checks the repository out and installs plumbcheck: the `version` input,
+else the repository's `PLUMBCHECK_VERSION`, else the action's own code (so
+`@<commit>` installs that commit). A version such as `0.1.0` comes from
+PyPI, anything else is a git ref of this repository. Then it fails when
 
 1. a tool configuration differs from what the configuration shares
    (`sync --check`),
@@ -82,9 +96,10 @@ from PyPI, anything else is a git ref of this repository), then fails when
 Before the commands it checks out submodules and, for each uv path source
 `../<name>`, the repository `<owner>/<name>` next to it, on the same-named
 branch if it has one (`plumbcheck siblings` lists them), so cross-repository
-changes test together. Private ones need a `SUBMODULES_TOKEN` secret. An
-organization can wrap the workflow in its own, pinning the version for all
-its repositories.
+changes test together. Private ones need the token. An organization can
+wrap the action in a reusable workflow of its own that pins one plumbcheck
+for all its repositories; a job that runs the action keeps its name, so a
+required status check stays the same.
 
 ### Locally
 
@@ -130,7 +145,7 @@ PYTHON_RUFF_ARGUMENTS: [--preview]
 | key | what |
 |---|---|
 | `EXTENDS` | the files this one extends, resolved first |
-| `PLUMBCHECK_VERSION` | the plumbcheck the CI workflow installs |
+| `PLUMBCHECK_VERSION` | the plumbcheck the CI action installs |
 | `LINTERS` | one entry per linter: language, extensions, command, fix, config, output parser, ... |
 | `VERSIONS` | the downloaded tools, by version, URL and sha256 |
 | `PROJECT_TYPES` | markers, setup and check commands of each project type |
@@ -287,8 +302,10 @@ Set `version` in `pyproject.toml`, merge, then tag the merge commit:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-`.github/workflows/release.yml` checks that the tag matches the version, runs
-the checks, builds with `uv build`, publishes to PyPI by trusted publishing
+Before tagging, point `.github/workflows/check.yml` at the action of the
+new release (`uses: drexlerd/plumbcheck@v<version>`).
+`.github/workflows/release.yml` checks that the tag matches the version and
+that `check.yml` uses its action, runs the checks, builds with `uv build`, publishes to PyPI by trusted publishing
 (environment `pypi`) and creates the GitHub release with the distributions.
 
 Once, before the first release, add a pending publisher on PyPI (Account

@@ -1,27 +1,21 @@
-# plumbcheck's check of a repository. A repository calls it with:
+# plumbcheck's check as a reusable workflow, for a repository that prefers
+# three lines to a job:
 #
 #   jobs:
 #     plumbcheck:
 #       uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0
+#       secrets: inherit   # SUBMODULES_TOKEN for private submodules/siblings
 #
-# A repository with private submodules or private sibling repositories adds
-# `secrets: inherit` and needs a SUBMODULES_TOKEN secret that can read them.
-#
-# It installs plumbcheck (the `version` input, else PLUMBCHECK_VERSION of the
-# repository's plumbcheck.yml, else the latest commit), recognises the
-# repository's types, requires the shared tool configurations, runs the
-# types' commands and the linters: on a pull request every finding in a
-# changed file fails, on a push to the default branch every finding.
+# It runs the action of this repository (action.yml) at the same release;
+# see there. To keep a required status check's name, or to pin a commit,
+# use the action in a job of your own instead.
 name: plumbcheck
 
 on:
   workflow_call:
     inputs:
       version:
-        description: >-
-          The plumbcheck to install: a release such as 0.1.0 (from PyPI) or a
-          git ref of drexlerd/plumbcheck. Default: PLUMBCHECK_VERSION of
-          plumbcheck.yml.
+        description: The plumbcheck to install; see action.yml.
         type: string
         default: ""
     secrets:
@@ -36,91 +30,8 @@ jobs:
   plumbcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # The release this file belongs to; release.yml checks it.
+      - uses: drexlerd/plumbcheck@v0.1.0
         with:
-          fetch-depth: 0
-          persist-credentials: false
-      # The repository's own token reads only the repository itself; private
-      # submodules are read with SUBMODULES_TOKEN.
-      - name: Check out submodules
-        if: hashFiles('.gitmodules') != ''
-        env:
-          TOKEN: ${{ secrets.SUBMODULES_TOKEN || github.token }}
-        run: >-
-          git -c "url.https://x-access-token:${TOKEN}@github.com/.insteadOf=https://github.com/"
-          submodule update --init --recursive
-      - uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.12"
-          enable-cache: true
-      # CMake reads the launcher from the environment, for its own builds and
-      # those of Python build backends.
-      - if: hashFiles('CMakeLists.txt') != ''
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ hashFiles('uv.lock', '**/CMakeLists.txt') }}
-      - if: hashFiles('CMakeLists.txt') != ''
-        run: |
-          echo CMAKE_C_COMPILER_LAUNCHER=ccache >> "$GITHUB_ENV"
-          echo CMAKE_CXX_COMPILER_LAUNCHER=ccache >> "$GITHUB_ENV"
-      - if: hashFiles('package.json') != '' && hashFiles('.nvmrc') == ''
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - if: hashFiles('.nvmrc') != ''
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - name: Install plumbcheck and its linters
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          if [ -z "$VERSION" ] && [ -f plumbcheck.yml ]; then
-            VERSION=$(sed -nE 's/^PLUMBCHECK_VERSION:[[:space:]]*["'\'']?([^"'\''[:space:]]+).*/\1/p' plumbcheck.yml | head -n 1)
-          fi
-          repository="git+https://github.com/drexlerd/plumbcheck"
-          case "$VERSION" in
-            "") spec="plumbcheck @ $repository" ;;
-            [0-9]*.[0-9]*) spec="plumbcheck==$VERSION" ;;
-            *) spec="plumbcheck @ $repository@$VERSION" ;;
-          esac
-          echo "installing $spec"
-          uv tool install "$spec"
-          plumbcheck --version
-          plumbcheck install
-      # Each uv path source `../<name>` with a repository <owner>/<name>, on
-      # the same-named branch if it has one, so cross-repository changes test
-      # together.
-      - name: Check out sibling repositories
-        env:
-          TOKEN: ${{ secrets.SUBMODULES_TOKEN || github.token }}
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-          OWNER: ${{ github.repository_owner }}
-          GIT_TERMINAL_PROMPT: "0"
-        run: |
-          auth="url.https://x-access-token:${TOKEN}@github.com/.insteadOf=https://github.com/"
-          for name in $(plumbcheck siblings); do
-            url="https://github.com/${OWNER}/${name}.git"
-            git -c "$auth" ls-remote --exit-code "$url" HEAD > /dev/null 2>&1 || continue
-            branch=()
-            if git -c "$auth" ls-remote --exit-code --heads "$url" "$BRANCH" > /dev/null 2>&1; then
-              branch=(--branch "$BRANCH")
-            fi
-            git -c "$auth" clone --depth 1 "${branch[@]}" "$url" "../$name"
-          done
-      - run: plumbcheck types
-      - name: Tool configurations are in sync
-        run: plumbcheck sync --check
-      - name: The types' commands
-        run: plumbcheck run
-      # Runs even when a command failed, so a reported build failure does not
-      # hide the findings; clang-tidy reads the compile commands `run` wrote.
-      - name: No findings
-        if: ${{ !cancelled() }}
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          DEFAULT: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
-        run: |
-          if [ "$DEFAULT" = true ]; then exec plumbcheck lint --all; fi
-          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then BASE=HEAD~1; fi
-          plumbcheck lint --base "$BASE"
+          version: ${{ inputs.version }}
+          token: ${{ secrets.SUBMODULES_TOKEN }}

@@ -61,7 +61,8 @@ def test_init_sets_a_repository_up_once(
     assert own.endswith(f"EXTENDS: {org}\nPLUMBCHECK_VERSION: 0.1.0\n")
     workflow = (tmp_path / ".github/workflows/plumbcheck.yml").read_text()
     assert workflow == (
-        cli.WORKFLOW.format(ref="v0.1.0") + "    secrets: inherit\n"
+        cli.WORKFLOW.format(ref="v0.1.0")
+        + "        with:\n          token: ${{ secrets.SUBMODULES_TOKEN }}\n"
     )
     assert (tmp_path / "ruff.toml").is_file()
     assert release == [(tmp_path, "plumbcheck==0.1.0")]
@@ -102,6 +103,10 @@ def test_upgrade_moves_the_pins(
     workflow = tmp_path / ".github/workflows/check.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(cli.WORKFLOW.format(ref="abc123"))
+    reusable = tmp_path / ".github/workflows/reusable.yml"
+    reusable.write_text(
+        "uses: drexlerd/plumbcheck/.github/workflows/check.yml@abc  # pinned\n"
+    )
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('[dependency-groups]\ndev = ["plumbcheck"]\n')
     assert cli.upgrade(tmp_path, None) == 0
@@ -109,6 +114,9 @@ def test_upgrade_moves_the_pins(
         "PLUMBCHECK_VERSION: 0.1.0\nDISABLE_LINTERS: [X]\n"
     )
     assert workflow.read_text() == cli.WORKFLOW.format(ref="v0.1.0")
+    assert reusable.read_text() == (
+        "uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0  # pinned\n"
+    )
     assert release == [(tmp_path, "plumbcheck==0.1.0")]
     assert cli.main(["--root", str(tmp_path), "upgrade", "--to", "v0.3.1"]) == 0
     assert "PLUMBCHECK_VERSION: 0.3.1\n" in own.read_text()

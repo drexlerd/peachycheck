@@ -36,10 +36,14 @@ on:
 
 jobs:
   plumbcheck:
-    uses: drexlerd/plumbcheck/.github/workflows/check.yml@{ref}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: drexlerd/plumbcheck@{ref}
 """
-# The reusable workflow at any ref, and the version plumbcheck.yml pins.
-USES = re.compile(r"(drexlerd/plumbcheck/\.github/workflows/check\.yml@)\S+")
+# The action or the reusable workflow at any ref, and the pinned version.
+USES = re.compile(
+    r"(drexlerd/plumbcheck(?:/\.github/workflows/check\.yml)?@)[^\s#]+"
+)
 PIN = re.compile(r"^PLUMBCHECK_VERSION:.*$", re.M)
 
 
@@ -230,7 +234,7 @@ def _pin() -> str:
 
 
 def _ref(pin: str) -> str:
-    """The ref of the reusable workflow for ``pin``: a release's tag."""
+    """The ref of the action for ``pin``: a release's tag, else ``pin``."""
     return f"v{pin}" if re.match(r"\d+\.\d+", pin) else pin
 
 
@@ -253,10 +257,10 @@ def init(root: Path, extends: str | None = None) -> int:
     else:
         inherit = (root / ".gitmodules").is_file()
         workflow.parent.mkdir(parents=True, exist_ok=True)
-        workflow.write_text(
-            WORKFLOW.format(ref=_ref(_pin()))
-            + ("    secrets: inherit\n" * inherit)
+        token = (
+            "        with:\n          token: ${{ secrets.SUBMODULES_TOKEN }}\n"
         )
+        workflow.write_text(WORKFLOW.format(ref=_ref(_pin())) + token * inherit)
         print(".github/workflows/plumbcheck.yml: written")
     _sync(root, check_only=False)
     install(root)
@@ -281,8 +285,9 @@ def _moved(root: Path, path: Path, pattern: re.Pattern[str], line: str) -> None:
 def upgrade(root: Path, to: str | None) -> int:
     """Move the pins of plumbcheck to ``to`` (or the installed version).
 
-    The pins are ``PLUMBCHECK_VERSION`` of plumbcheck.yml, the reusable
-    workflow's ref in ``.github/workflows`` and the dev dependency.
+    The pins are ``PLUMBCHECK_VERSION`` of plumbcheck.yml, the refs of the
+    action and the reusable workflow in ``.github/workflows`` and the dev
+    dependency.
     """
     own = root / config.NAME
     if not own.is_file():

@@ -32,6 +32,9 @@ jobs:
           version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
           if os.environ["GITHUB_REF_NAME"] != f"v{version}":
               raise SystemExit(f"Tag must match project version {version}")
+          workflow = Path(".github/workflows/check.yml").read_text()
+          if f"uses: drexlerd/plumbcheck@v{version}" not in workflow:
+              raise SystemExit(f"check.yml must use the action at v{version}")
           PYTHON
       - name: Check style, types, and tests
         run: |
