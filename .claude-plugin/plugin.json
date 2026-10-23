@@ -1,0 +1,11 @@
+{
+  "name": "plumbcheck",
+  "version": "0.1.0",
+  "description": "Lint after each edit and before the agent stops, with the plumbcheck on PATH",
+  "author": {
+    "name": "Dominik Drexler",
+    "url": "https://github.com/drexlerd"
+  },
+  "repository": "https://github.com/drexlerd/plumbcheck",
+  "license": "AGPL-3.0-only"
+}

@@ -244,6 +244,22 @@ that version. `PLUMBCHECK_HOOKS=off` turns them off;
 `plumbcheck hooks uninstall [--claude] [--codex]` removes exactly these
 entries.
 
+## Claude Code plugin
+
+Instead of `plumbcheck hooks install`, Claude Code can take the same two
+hooks from this repository as a plugin (or add the marketplace
+`drexlerd/plumbcheck` under a cloud project's settings):
+
+```sh
+/plugin install plumbcheck --marketplace drexlerd/plumbcheck
+```
+
+The plugin runs `plumbcheck hook post-edit` after each `Edit|Write|MultiEdit`
+and `plumbcheck hook stop` before Claude stops, with the `plumbcheck` on
+`PATH` (install it as above). Without one, each hook prints a one-line
+notice and exits 0. Use either the plugin or `plumbcheck hooks install`,
+not both, or each hook runs twice.
+
 ## Findings
 
 Each file's findings come with a link to the documentation of each rule:
