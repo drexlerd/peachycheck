@@ -27,6 +27,18 @@ overriding only what it must.
 - **Finding-free.** Every finding fails; there is no baseline. On a pull
   request only the changed files count, on the default branch every file.
 
+## Languages
+
+- [x] Python (`.py`): ruff, ruff format
+- [x] C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.h`, `.tpp`, `.ipp`): clang-tidy
+- [x] TypeScript (`.ts`, `.tsx`): ESLint
+- [x] reStructuredText (`.rst`): doc8, vale, codespell
+- [x] Jinja (`.j2`, `.jinja`, `.jinja2`): j2lint
+- [x] Secrets (every file): gitleaks
+- [ ] Python types (`.py`): pyright
+- [ ] C++ formatting: clang-format
+- [ ] LaTeX (`.tex`)
+
 ## Install
 
 ```sh
