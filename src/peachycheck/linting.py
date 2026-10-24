@@ -525,12 +525,15 @@ def _fix(
                 )
 
 
-def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
+def lint(
+    root: Path, paths: Sequence[str], *, fix: bool = False, edit: bool = False
+) -> Result:
     """The findings of the linters on ``paths`` of ``root``.
 
     ``paths`` are relative to ``root``; deleted and generated files
     are skipped. A linter that finds none of its ``requires`` files is a
-    problem.
+    problem. With ``edit`` (the hook after an edit), linters with
+    ``stage: stop`` wait for the stop hook.
     """
     present = sorted(
         {p for p in paths if (root / p).is_file()} - generated(root)
@@ -539,6 +542,8 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
     result = Result()
     work: dict[str, list[str]] = {}
     for name, spec in linters.items():
+        if edit and spec.get("stage") == "stop":
+            continue
         selected = _selected(spec, present)
         if not selected:
             continue

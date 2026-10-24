@@ -1,7 +1,8 @@
 """The Claude Code and Codex hooks: lint while the agent works.
 
-``post-edit`` lints, after fixing, the files an edit touched; ``stop`` lints
-the files changed since the merge base before the agent finishes, and blocks
+``post-edit`` lints, after fixing, the files an edit touched, with every
+linter but the slow ones (``stage: stop``); ``stop`` lints the files changed
+since the merge base with all linters before the agent finishes, and blocks
 at most ``ATTEMPTS`` times in a row. Builds and tests are left to the
 repository's own CI. Both read the hook's JSON on stdin; the CLI is told apart by its
 input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
@@ -95,7 +96,7 @@ def post_edit(payload: dict[str, Any]) -> Reply:
     where = Path(payload.get("cwd") or ".").resolve()
     messages: list[str] = []
     for root, paths in _edited_roots(payload).items():
-        found = linting.lint(root, paths, fix=True)
+        found = linting.lint(root, paths, fix=True, edit=True)
         messages += _shown(root, where, linting.report(found, EDIT_FINDINGS))
     return Reply(2, stderr="\n".join(messages)) if messages else Reply()
 

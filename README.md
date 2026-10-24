@@ -243,9 +243,10 @@ without the file, each C++ file reports that as a problem.
 
 - after each edit (`Edit|Write|MultiEdit`, Codex's `apply_patch`),
   `peachycheck hook post-edit` fixes and lints the edited files and feeds the
-  findings back to the agent;
+  findings back to the agent, with every linter but the slow ones
+  (`stage: stop`, by default clang-tidy);
 - before the agent stops, `peachycheck hook stop` lints the files changed
-  since the merge base (no builds or tests); it blocks the stop on a failure, at most twice in a row, then
+  since the merge base with all linters (no builds or tests); it blocks the stop on a failure, at most twice in a row, then
   lets the agent stop and shows what remains.
 
 Each edited file counts for its own repository (the nearest folder above it

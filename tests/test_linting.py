@@ -984,3 +984,11 @@ def test_cached_results_are_kept_until_an_input_changes(
     (root / ".fake.yml").write_text("A: 2\n")  # an input
     linting.lint(root, files)
     assert runs() == files
+
+
+def test_a_stop_stage_linter_waits_for_the_stop_hook(tmp_path: Path) -> None:
+    root = _fake(tmp_path, ["src/a.cpp"])
+    spec = (root / config.NAME).read_text()
+    (root / config.NAME).write_text(spec + "    stage: stop\n")
+    assert linting.lint(root, ["src/a.cpp"]).findings
+    assert not linting.lint(root, ["src/a.cpp"], edit=True).findings

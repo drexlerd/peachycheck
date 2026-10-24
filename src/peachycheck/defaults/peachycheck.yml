@@ -41,7 +41,8 @@
 # findings in ~/.cache/peachycheck/results until an input changes: the file,
 # with `includes: true` the repository files it includes, the `inputs`
 # files from its folder up, its compile command, the linter's settings and
-# its version. `ok` lists the
+# its version. `stage: stop` keeps a slow linter out of the hook after each
+# edit; the stop hook, `lint` and CI still run it. `ok` lists the
 # exit codes that mean "ran". `requires` is a file the linter needs, or a
 # list of them of which the first that exists counts ({required} in
 # `command` is that file, {requires} its folder), and `missing` says how to get it;
@@ -124,6 +125,7 @@ LINTERS:
       clang-analyzer-: https://clang.llvm.org/extra/clang-tidy/checks/clang-analyzer/{name}.html
     command: clang-tidy -p {requires} --quiet
     cache: {includes: true, inputs: [.clang-tidy, .peachycheck/.clang-tidy]}
+    stage: stop
     config: {file: .clang-tidy, flag: --config-file, merge: yaml}
     output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'
     # CPP_CLANG_TIDY_COMPILE_COMMANDS: the path (or paths) of the
