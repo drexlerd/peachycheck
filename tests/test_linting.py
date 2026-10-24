@@ -4,7 +4,6 @@ import gzip
 import io
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import tarfile
@@ -831,36 +830,55 @@ def test_stop_in_a_parent_folder_checks_each_changed_repository(
     assert "In SECOND/:\nSECOND fails" in reply.stderr
 
 
+FAKE_LINTER = """\
+import sys
+sources = sys.argv[1:]
+for source in sources:
+    print(f"{source}:1: one of {len(sources)} [run]")
+if any(source.endswith(".cpp") for source in sources):
+    print("include/a.hpp:2: seen from a source [header]")
+"""
+FAKE_CONFIG = """\
+ENABLE_LINTERS: [FAKE]
+LINTERS:
+  FAKE:
+    extensions: [.cpp, .hpp]
+    command: "{python} fake.py"
+    output: 'regex:^(?P<path>[^:]+):(?P<line>\\d+): (?P<message>.*) \\[(?P<rule>\\w+)\\]$'
+"""
+
+
+def _fake(tmp_path: Path, files: list[str]) -> Path:
+    """A repository whose only linter reports each file with its run's size."""
+    contents = {"fake.py": FAKE_LINTER, config.NAME: FAKE_CONFIG}
+    root, _ = _repository(
+        tmp_path, contents | dict.fromkeys(files, ""), configured=False
+    )
+    return root
+
+
 def test_runs_are_spread_over_the_workers(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(linting, "WORKERS", 4)
-    paths = [f"f{i}.cpp" for i in range(10)]
-    assert [len(run) for run in linting._jobs({}, paths)] == [3, 3, 3, 1]
-    assert [len(run) for run in linting._jobs({"per_file": True}, paths)] == [
-        1
-    ] * 10
-    many = [f"f{i}.py" for i in range(1000)]
-    assert max(len(run) for run in linting._jobs({}, many)) == linting.CHUNK
-    assert linting._jobs({}, []) == []
+    sources = [f"src/f{i}.cpp" for i in range(10)]
+    found = linting.lint(_fake(tmp_path, sources), sources)
+    sizes = sorted(f.message for f in found.findings if f.rule == "run")
+    assert sizes == ["one of 1"] + ["one of 3"] * 9
 
 
-def test_a_run_keeps_findings_in_files_of_other_runs(tmp_path: Path) -> None:
+def test_header_findings_from_another_run_are_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # clang-tidy reports a header's findings while checking a source that
-    # includes it; the header may be in another run than that source.
-    report = "print('include/a.hpp:3:1: warning: bad [some-check]')"
-    pattern = r"^(?P<path>[^:]+):(?P<line>\d+):\d+: warning: (?P<message>.*) \[(?P<rule>[\w-]+)\]$"
-    spec = {
-        "command": f"{{python}} -c {shlex.quote(report)}",
-        "output": f"regex:{pattern}",
-        "arguments": [],
-    }
-    source = ["src/a.cpp"]
-    run = linting._run(
-        tmp_path, "FAKE", spec, source, frozenset({*source, "include/a.hpp"})
+    # includes it; with one file per run, the header is in a run of its own.
+    monkeypatch.setattr(linting, "WORKERS", 3)
+    files = ["include/a.hpp", "src/a.cpp", "src/b.cpp"]
+    root = _fake(tmp_path, files)
+    assert ("include/a.hpp", "FAKE", "header") in _rules(
+        linting.lint(root, files)
     )
-    assert [(f.path, f.line, f.rule) for f in run.findings] == [
-        ("include/a.hpp", 3, "some-check")
-    ]
-    outside = linting._run(tmp_path, "FAKE", spec, source, frozenset(source))
-    assert outside.findings == []
+    # A file outside the lint stays out.
+    assert ("include/a.hpp", "FAKE", "header") not in _rules(
+        linting.lint(root, ["src/a.cpp"])
+    )
