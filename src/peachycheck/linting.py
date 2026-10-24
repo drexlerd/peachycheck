@@ -33,7 +33,8 @@ BIN: Final = Path("~/.cache/peachycheck/bin")
 CACHE: Final = Path("~/.cache/peachycheck/results")
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
 CHUNK: Final = 200  # at most this many files per run of a linter
-WORKERS: Final = os.cpu_count() or 4
+# Linters run in parallel on this many files; PEACHYCHECK_JOBS lowers it where memory is short.
+WORKERS: Final = int(os.environ.get("PEACHYCHECK_JOBS", "0")) or os.cpu_count() or 4
 DEFAULT_OK: Final = (0, 1)
 
 

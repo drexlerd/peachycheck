@@ -286,6 +286,10 @@ a.py has 1 findings; fix each one:
   a.py:17: PYTHON_RUFF:N802 Function name `mixedCase` should be lowercase → https://docs.astral.sh/ruff/rules/invalid-function-name
 ```
 
+Linters run on as many files at once as the machine has cores;
+`PEACHYCHECK_JOBS=8` runs at most eight, where memory is short
+(clang-tidy on heavy C++ needs a few GB per file).
+
 A tool such as an agent loop can use peachycheck as a library:
 `linting.lint_errors(root, base)` returns these messages for the files
 changed since `base`.
