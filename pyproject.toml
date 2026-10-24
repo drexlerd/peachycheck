@@ -1,7 +1,7 @@
 [project]
-name = "plumbcheck"
+name = "peachycheck"
 version = "0.1.0"
-description = "Native linters and agent hooks from one plumbcheck.yml per repository"
+description = "Native linters and agent hooks from one peachycheck.yml per repository"
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 # The default linters that are Python packages, pinned; vale and gitleaks
-# are downloaded by `plumbcheck install`.
+# are downloaded by `peachycheck install`.
 dependencies = [
     "pyyaml==6.0.3",
     "ruff==0.17.1",
@@ -30,12 +30,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/drexlerd/plumbcheck"
-Source = "https://github.com/drexlerd/plumbcheck"
-Issues = "https://github.com/drexlerd/plumbcheck/issues"
+Homepage = "https://github.com/drexlerd/peachycheck"
+Source = "https://github.com/drexlerd/peachycheck"
+Issues = "https://github.com/drexlerd/peachycheck/issues"
 
 [project.scripts]
-plumbcheck = "plumbcheck.cli:main"
+peachycheck = "peachycheck.cli:main"
 
 [dependency-groups]
 dev = [
@@ -52,4 +52,4 @@ build-backend = "hatchling.build"
 include = ["/src", "/README.md", "/LICENSE"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/plumbcheck"]
+packages = ["src/peachycheck"]

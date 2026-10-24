@@ -1,4 +1,4 @@
-"""``plumbcheck lint``: the linters of ``plumbcheck.yml`` on a repository.
+"""``peachycheck lint``: the linters of ``peachycheck.yml`` on a repository.
 
 The files are the given ones, those changed since a base, or all; the
 files ``GENERATED`` lists are never checked. Each linter runs on the files
@@ -27,10 +27,10 @@ from typing import Any, Final, cast
 
 import yaml
 
-from plumbcheck import config
+from peachycheck import config
 
-BIN: Final = Path("~/.cache/plumbcheck/bin")
-CACHE: Final = Path("~/.cache/plumbcheck/results")
+BIN: Final = Path("~/.cache/peachycheck/bin")
+CACHE: Final = Path("~/.cache/peachycheck/results")
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
 CHUNK: Final = 200  # at most this many files per run of a linter
 WORKERS: Final = os.cpu_count() or 4
@@ -130,7 +130,7 @@ def _config(root: Path, wanted: dict[str, Any]) -> Path | None:
     """The configuration file a linter gets in ``root``, if any.
 
     With ``merge: yaml``, the repository's own file is laid over the base
-    in ``.plumbcheck/``: a written copy holds both. Without a base, none:
+    in ``.peachycheck/``: a written copy holds both. Without a base, none:
     clang-tidy finds the repository's file itself, and the files in
     subfolders that adjust it (a given file would hide those).
     """
@@ -167,7 +167,7 @@ def merged_yaml(base: Path, own: Path) -> Path:
         result["CheckOptions"] = options
     text = yaml.safe_dump(result, sort_keys=False)
     digest = hashlib.sha256(text.encode()).hexdigest()[:16]
-    path = Path(tempfile.gettempdir()) / "plumbcheck" / f"{digest}-{own.name}"
+    path = Path(tempfile.gettempdir()) / "peachycheck" / f"{digest}-{own.name}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path
@@ -337,7 +337,7 @@ def _run(
     except FileNotFoundError as missing:
         return Result(
             problems=[
-                f"{name}: {missing.filename} is not installed; run `plumbcheck install`"
+                f"{name}: {missing.filename} is not installed; run `peachycheck install`"
             ]
         )
     if result.returncode not in tuple(spec.get("ok", DEFAULT_OK)):
@@ -638,7 +638,7 @@ def lint_files(
 ) -> list[tuple[Path, Result]]:
     """Lint absolute ``paths``, each with the repository it belongs to.
 
-    A file belongs to the nearest folder above it with a plumbcheck.yml (see
+    A file belongs to the nearest folder above it with a peachycheck.yml (see
     ``config.owner``); files of no such repository are skipped.
     """
     return [
@@ -685,5 +685,5 @@ def install(versions: dict[str, dict[str, str]]) -> list[str]:
         "pyright",
     ):
         where = shutil.which(tool, path=search_path())
-        done.append(f"{tool}: {where or 'missing; reinstall plumbcheck'}")
+        done.append(f"{tool}: {where or 'missing; reinstall peachycheck'}")
     return done

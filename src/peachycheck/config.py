@@ -1,10 +1,10 @@
-"""``plumbcheck.yml``: plumbcheck's defaults and a repository's overrides.
+"""``peachycheck.yml``: peachycheck's defaults and a repository's overrides.
 
-Every configuration extends plumbcheck's defaults first. A file may
+Every configuration extends peachycheck's defaults first. A file may
 ``EXTENDS`` others (URLs or paths, resolved first); later files win, mappings
 merge key by key, and the keys ``CONFIG_PROPERTIES_TO_APPEND`` names append
 their lists, as in MegaLinter's configuration. A repository without a
-``plumbcheck.yml`` gets the defaults.
+``peachycheck.yml`` gets the defaults.
 
 The paths in ``FILES`` resolve against the file that names them. A file
 extended by its GitHub raw URL
@@ -24,12 +24,12 @@ from typing import Any, Final, cast
 
 import yaml
 
-NAME: Final = "plumbcheck.yml"
+NAME: Final = "peachycheck.yml"
 APPEND: Final = "CONFIG_PROPERTIES_TO_APPEND"
-CACHE: Final = Path("~/.cache/plumbcheck/extends")
+CACHE: Final = Path("~/.cache/peachycheck/extends")
 DEFAULTS: Final = Path(__file__).parent / "defaults" / NAME
 # The folder ``sync`` writes the shared base configurations into.
-BASE: Final = ".plumbcheck"
+BASE: Final = ".peachycheck"
 GITHUB_RAW: Final = re.compile(
     r"https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)"
 )
@@ -42,7 +42,7 @@ def _url(source: str) -> bool:
 
 
 def _download(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "plumbcheck"})
+    request = urllib.request.Request(url, headers={"User-Agent": "peachycheck"})
     with urllib.request.urlopen(request, timeout=60) as response:
         return cast(bytes, response.read())
 
@@ -143,7 +143,7 @@ def resolve(source: str, seen: frozenset[str] = frozenset()) -> Config:
 
 
 def load(root: Path | None = None) -> Config:
-    """The configuration of ``root``: the defaults and its ``plumbcheck.yml``."""
+    """The configuration of ``root``: the defaults and its ``peachycheck.yml``."""
     defaults = resolve(str(DEFAULTS))
     own = root / NAME if root else None
     if own is None or not own.is_file():
@@ -155,7 +155,7 @@ def rule_file(root: Path, name: str) -> Path | None:
     """The configuration file ``name`` of a linter in the repository ``root``.
 
     The repository's own (which inherits the base natively), else the base
-    in ``.plumbcheck/``, else none: the tool's own defaults.
+    in ``.peachycheck/``, else none: the tool's own defaults.
     """
     candidates = (root / name, root / BASE / name)
     return next((c for c in candidates if c.is_file()), None)
@@ -172,9 +172,9 @@ def _toplevel(folder: Path) -> Path | None:
 
 
 def owner(path: Path) -> Path | None:
-    """The repository a file belongs to, or None when plumbcheck skips it.
+    """The repository a file belongs to, or None when peachycheck skips it.
 
-    It is the nearest folder above the file with a plumbcheck.yml, up to the
+    It is the nearest folder above the file with a peachycheck.yml, up to the
     file's git toplevel.
     """
     folder = path if path.is_dir() else path.parent

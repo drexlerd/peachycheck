@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  # plumbcheck checks itself with the action and the code under test.
-  plumbcheck:
+  # peachycheck checks itself with the action and the code under test.
+  peachycheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 22
       - run: uv sync --locked
-      - run: uv run --no-sync plumbcheck install
+      - run: uv run --no-sync peachycheck install
       - run: uv run --no-sync pyright
       - run: uv run --no-sync pytest -q
         env:

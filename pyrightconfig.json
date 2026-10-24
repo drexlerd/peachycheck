@@ -1,9 +1,9 @@
-// plumbcheck's own settings: stricter than its defaults.
+// peachycheck's own settings: stricter than its defaults.
 // Only settings that differ from pyright's defaults, each with its reason.
 {
   // The strict rule set (default: standard).
   "typeCheckingMode": "strict",
-  // The oldest Python plumbcheck supports (default: the interpreter's).
+  // The oldest Python peachycheck supports (default: the interpreter's).
   "pythonVersion": "3.12",
   // Resolve imports in the project's uv environment (default: the PATH's).
   "venvPath": ".",

@@ -1,6 +1,6 @@
-# plumbcheck's defaults: every configuration extends this file first.
+# peachycheck's defaults: every configuration extends this file first.
 #
-# A repository's plumbcheck.yml, and the files it EXTENDS (URLs or paths),
+# A repository's peachycheck.yml, and the files it EXTENDS (URLs or paths),
 # override any key: later files win, mappings merge key by key, and the keys
 # CONFIG_PROPERTIES_TO_APPEND names append their lists instead, as in
 # MegaLinter (https://megalinter.io/latest/config-file/). Relative paths in
@@ -12,7 +12,7 @@
 # <LINTER>_ARGUMENTS (appended to its command).
 
 # FILES: the base configurations `sync` writes into the repository's
-# .plumbcheck/ folder, such as `ruff.toml: rules/ruff.toml`: those under
+# .peachycheck/ folder, such as `ruff.toml: rules/ruff.toml`: those under
 # `general` for every repository, those under a marker file (such as
 # `pyproject.toml`) for each repository that has it; a later entry wins.
 # None by default.
@@ -22,15 +22,15 @@
 #   GENERATED: {file: manifest.json, list: sources, path: path,
 #               where: {ownership: generated}}
 #
-# plumbcheck holds no opinions and runs no builds or tests: this file only
+# peachycheck holds no opinions and runs no builds or tests: this file only
 # says how to run and read each linter. Every linter runs with its own
 # defaults unless a configuration says otherwise.
 
 # One entry per linter. A linter checks the files with its `extensions`, or
 # every file without any. `command` gets the files appended ({python} is
-# plumbcheck's interpreter); `fix`, if any, runs first with `lint --fix`.
+# peachycheck's interpreter); `fix`, if any, runs first with `lint --fix`.
 # `config` passes the repository's own file of that name, else the base in
-# .plumbcheck/, else none; with `required`, the linter skips a repository
+# .peachycheck/, else none; with `required`, the linter skips a repository
 # without one (the tool cannot run without), and `merge: yaml` lays the
 # repository's file over the base (clang-tidy cannot extend another file).
 # `output` parses the findings: json-ruff, json-eslint, json-vale,
@@ -38,7 +38,7 @@
 # message; `rule` names the rule when the pattern has none), read from
 # stdout, or from stderr with `stream: stderr`. `one_run` checks all files
 # in one run (the linter parallelizes itself). `cache` keeps each file's
-# findings in ~/.cache/plumbcheck/results until an input changes: the file,
+# findings in ~/.cache/peachycheck/results until an input changes: the file,
 # with `includes: true` the repository files it includes, the `inputs`
 # files from its folder up, its compile command, the linter's settings and
 # its version. `ok` lists the
@@ -123,12 +123,12 @@ LINTERS:
       "": https://clang.llvm.org/extra/clang-tidy/checks/{group}/{name}.html
       clang-analyzer-: https://clang.llvm.org/extra/clang-tidy/checks/clang-analyzer/{name}.html
     command: clang-tidy -p {requires} --quiet
-    cache: {includes: true, inputs: [.clang-tidy, .plumbcheck/.clang-tidy]}
+    cache: {includes: true, inputs: [.clang-tidy, .peachycheck/.clang-tidy]}
     config: {file: .clang-tidy, flag: --config-file, merge: yaml}
     output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'
     # CPP_CLANG_TIDY_COMPILE_COMMANDS: the path (or paths) of the
     # repository's compile_commands.json.
-    requires: [build/plumbcheck/compile_commands.json, build/compile_commands.json]
+    requires: [build/peachycheck/compile_commands.json, build/compile_commands.json]
     requires_key: COMPILE_COMMANDS
     missing: configure CMake with CMAKE_EXPORT_COMPILE_COMMANDS=ON
   CPP_CLANG_FORMAT:
@@ -142,7 +142,7 @@ LINTERS:
     ok: [0]
   REPOSITORY_GITLEAKS:
     link: https://github.com/gitleaks/gitleaks
-    # One path per run; plumbcheck runs it per file.
+    # One path per run; peachycheck runs it per file.
     command: >-
       gitleaks dir --no-banner --log-level error --redact --exit-code 0
       --report-format json --report-path -
@@ -150,9 +150,9 @@ LINTERS:
     output: json-gitleaks
     ok: [0]
 
-# The tools `plumbcheck install` downloads into ~/.cache/plumbcheck/bin,
+# The tools `peachycheck install` downloads into ~/.cache/peachycheck/bin,
 # checked against their sha256 (linux x64). ruff, codespell, doc8,
-# clang-tidy, clang-format, j2lint and pyright are pinned Python dependencies of plumbcheck; eslint
+# clang-tidy, clang-format, j2lint and pyright are pinned Python dependencies of peachycheck; eslint
 # is the repository's own (node_modules).
 VERSIONS:
   vale:

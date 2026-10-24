@@ -1,6 +1,6 @@
-"""The command line ``plumbcheck``: lint, sync and the agents' hooks.
+"""The command line ``peachycheck``: lint, sync and the agents' hooks.
 
-``FILES`` of a repository's ``plumbcheck.yml`` names the tool configurations
+``FILES`` of a repository's ``peachycheck.yml`` names the tool configurations
 it shares: those of ``general`` with every repository, the others with each
 repository that has their marker file. ``sync`` writes them, ``sync --check``
 fails on any difference; ``lint`` runs the linters and ``hook`` answers the
@@ -23,10 +23,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Final, cast
 
-from plumbcheck import config, hooks, linting
+from peachycheck import config, hooks, linting
 
-PACKAGE = "plumbcheck"
-WORKFLOW = """name: plumbcheck
+PACKAGE = "peachycheck"
+WORKFLOW = """name: peachycheck
 
 on:
   pull_request:
@@ -34,22 +34,22 @@ on:
     branches: [main]
 
 jobs:
-  plumbcheck:
+  peachycheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: drexlerd/plumbcheck@{ref}
+      - uses: drexlerd/peachycheck@{ref}
 """
 # The action or the reusable workflow at any ref, and the pinned version.
 USES = re.compile(
-    r"(drexlerd/plumbcheck(?:/\.github/workflows/check\.yml)?@)[^\s#]+"
+    r"(drexlerd/peachycheck(?:/\.github/workflows/check\.yml)?@)[^\s#]+"
 )
-PIN = re.compile(r"^PLUMBCHECK_VERSION:.*$", re.M)
+PIN = re.compile(r"^PEACHYCHECK_VERSION:.*$", re.M)
 GENERAL: Final = "general"  # the FILES of every repository
 MAIN_BRANCH: str = ""  # empty: the remote's default branch (origin/HEAD)
 
 
 def version() -> str:
-    """The installed version of plumbcheck."""
+    """The installed version of peachycheck."""
     return importlib.metadata.version(PACKAGE)
 
 
@@ -64,7 +64,7 @@ def released() -> bool:
 
 
 def _commit() -> str:
-    """The commit of plumbcheck this was installed from."""
+    """The commit of peachycheck this was installed from."""
     try:
         found = importlib.metadata.distribution(PACKAGE)
         direct = json.loads(found.read_text("direct_url.json") or "{}")
@@ -83,7 +83,7 @@ def _commit() -> str:
 
 
 def base_files(root: Path) -> dict[str, Path]:
-    """What ``.plumbcheck/`` of ``root`` holds: each file, by its path there.
+    """What ``.peachycheck/`` of ``root`` holds: each file, by its path there.
 
     ``FILES`` names them under ``general`` for every repository, and under a
     marker file, such as ``pyproject.toml``, for each repository that has
@@ -104,13 +104,13 @@ def base_files(root: Path) -> dict[str, Path]:
 
 
 def sync(root: Path, *, check: bool) -> list[str]:
-    """Write ``.plumbcheck/`` of ``root``; with ``check``, only compare.
+    """Write ``.peachycheck/`` of ``root``; with ``check``, only compare.
 
     The folder holds the base configurations of the repository, as
     ``base_files`` lists them, and nothing else.
 
     Returns:
-        The files of ``.plumbcheck/`` that differ (``check``) or were
+        The files of ``.peachycheck/`` that differ (``check``) or were
         written or removed.
     """
     folder = root / config.BASE
@@ -166,7 +166,7 @@ INHERIT: Final = {
 def inherit(root: Path) -> list[str]:
     """Write the repository's own configurations that inherit the base.
 
-    Only for a base file of ``.plumbcheck/`` whose tool can extend another
+    Only for a base file of ``.peachycheck/`` whose tool can extend another
     file, and only where the repository has no configuration yet.
     """
     pyproject = root / "pyproject.toml"
@@ -188,7 +188,7 @@ def _uv_add(root: Path, requirement: str) -> None:
 
 
 def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
-    """Pin ``plumbcheck==wanted`` in the dev group of ``root``.
+    """Pin ``peachycheck==wanted`` in the dev group of ``root``.
 
     Without ``add``, only an existing pin moves. A generated pyproject.toml
     (see ``GENERATED``) gets none.
@@ -206,14 +206,14 @@ def _dev_dependency(root: Path, wanted: str | None, *, add: bool) -> str:
     dev = [d for d in groups.get("dev", []) if isinstance(d, str)]
     if requirement in dev:
         return f"pyproject.toml: {requirement} already"
-    if not add and not any(re.match(r"plumbcheck\b", d) for d in dev):
+    if not add and not any(re.match(r"peachycheck\b", d) for d in dev):
         return ""
     _uv_add(root, requirement)
     return f"pyproject.toml: {requirement} in the dev dependencies"
 
 
 def _pin() -> str:
-    """The version plumbcheck.yml pins: the release, else the commit."""
+    """The version peachycheck.yml pins: the release, else the commit."""
     return version() if released() else _commit()
 
 
@@ -223,21 +223,21 @@ def _ref(pin: str) -> str:
 
 
 def init(root: Path, extends: str | None = None) -> int:
-    """Set ``root`` up: plumbcheck.yml, the CI workflow, configs, tools, pin."""
+    """Set ``root`` up: peachycheck.yml, the CI workflow, configs, tools, pin."""
     own = root / config.NAME
     if own.is_file():
         print(f"{config.NAME}: exists")
     else:
         own.write_text(
-            "# plumbcheck's configuration: "
-            "https://github.com/drexlerd/plumbcheck#configuration\n"
+            "# peachycheck's configuration: "
+            "https://github.com/drexlerd/peachycheck#configuration\n"
             + (f"EXTENDS: {extends}\n" if extends else "")
-            + f"PLUMBCHECK_VERSION: {_pin()}\n"
+            + f"PEACHYCHECK_VERSION: {_pin()}\n"
         )
         print(f"{config.NAME}: written")
-    workflow = root / ".github" / "workflows" / "plumbcheck.yml"
+    workflow = root / ".github" / "workflows" / "peachycheck.yml"
     if workflow.is_file():
-        print(".github/workflows/plumbcheck.yml: exists")
+        print(".github/workflows/peachycheck.yml: exists")
     else:
         private = (root / ".gitmodules").is_file()
         workflow.parent.mkdir(parents=True, exist_ok=True)
@@ -245,7 +245,7 @@ def init(root: Path, extends: str | None = None) -> int:
             "        with:\n          token: ${{ secrets.SUBMODULES_TOKEN }}\n"
         )
         workflow.write_text(WORKFLOW.format(ref=_ref(_pin())) + token * private)
-        print(".github/workflows/plumbcheck.yml: written")
+        print(".github/workflows/peachycheck.yml: written")
     _sync(root, check_only=False)
     for name in inherit(root):
         print(f"{name}: written, extending {config.BASE}/{name}")
@@ -269,23 +269,23 @@ def _moved(root: Path, path: Path, pattern: re.Pattern[str], line: str) -> None:
 
 
 def upgrade(root: Path, to: str | None) -> int:
-    """Move the pins of plumbcheck to ``to`` (or the installed version).
+    """Move the pins of peachycheck to ``to`` (or the installed version).
 
-    The pins are ``PLUMBCHECK_VERSION`` of plumbcheck.yml, the refs of the
+    The pins are ``PEACHYCHECK_VERSION`` of peachycheck.yml, the refs of the
     action and the reusable workflow in ``.github/workflows`` and the dev
     dependency.
     """
     own = root / config.NAME
     if not own.is_file():
-        print(f"no {config.NAME}; run `plumbcheck init` first")
+        print(f"no {config.NAME}; run `peachycheck init` first")
         return 1
     wanted = to.removeprefix("v") if to else None
     if wanted is None and released():
         wanted = version()
     pin = wanted or _commit()
     if not PIN.search(own.read_text()):
-        own.write_text(own.read_text() + f"PLUMBCHECK_VERSION: {pin}\n")
-    _moved(root, own, PIN, f"PLUMBCHECK_VERSION: {pin}")
+        own.write_text(own.read_text() + f"PEACHYCHECK_VERSION: {pin}\n")
+    _moved(root, own, PIN, f"PEACHYCHECK_VERSION: {pin}")
     for workflow in sorted((root / ".github" / "workflows").glob("*.y*ml")):
         _moved(root, workflow, USES, f"\\g<1>{_ref(pin)}")
     pinned = _dev_dependency(root, wanted, add=False)
@@ -383,7 +383,7 @@ def install_hooks(options: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     """The command line; a consumer may add arguments before parsing."""
-    result = argparse.ArgumentParser(prog="plumbcheck")
+    result = argparse.ArgumentParser(prog="peachycheck")
     result.add_argument("--root", type=Path, default=Path.cwd())
     result.add_argument(
         "--version", action="version", version=f"%(prog)s {version()}"
@@ -408,13 +408,13 @@ def parser() -> argparse.ArgumentParser:
     syncing = commands.add_parser("sync", help="write the shared tool configs")
     syncing.add_argument("--check", action="store_true", help="only compare")
     initializing = commands.add_parser(
-        "init", help="set the repository up: plumbcheck.yml, CI, configs"
+        "init", help="set the repository up: peachycheck.yml, CI, configs"
     )
     initializing.add_argument(
-        "--extends", help="the URL or path of the file plumbcheck.yml extends"
+        "--extends", help="the URL or path of the file peachycheck.yml extends"
     )
     upgrading = commands.add_parser(
-        "upgrade", help="move the pins of plumbcheck to a version"
+        "upgrade", help="move the pins of peachycheck to a version"
     )
     upgrading.add_argument("--to", help="default: the installed version")
     return result
@@ -422,13 +422,13 @@ def parser() -> argparse.ArgumentParser:
 
 def _sync(root: Path, check_only: bool) -> int:
     differing = sync(root, check=check_only)
-    verb = "differs; run `plumbcheck sync`" if check_only else "written"
+    verb = "differs; run `peachycheck sync`" if check_only else "written"
     print("\n".join(f"{path}: {verb}" for path in differing) or "in sync")
     return 1 if differing and check_only else 0
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Run one command of ``plumbcheck``."""
+    """Run one command of ``peachycheck``."""
     options = parser().parse_args(arguments)
     root: Path = options.root.resolve()
     commands: dict[str, Callable[[], int]] = {

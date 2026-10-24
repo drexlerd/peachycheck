@@ -1,5 +1,5 @@
-# A sample organization: its base configurations, which `plumbcheck sync`
-# writes into a repository's .plumbcheck/. Relative paths resolve against
+# A sample organization: its base configurations, which `peachycheck sync`
+# writes into a repository's .peachycheck/. Relative paths resolve against
 # this file.
 FILES:
   general:

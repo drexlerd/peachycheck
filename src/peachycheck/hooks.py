@@ -7,11 +7,11 @@ repository's own CI. Both read the hook's JSON on stdin; the CLI is told apart b
 input (Codex sends a ``turn_id`` and edits with ``apply_patch``).
 
 Each file counts for its own repository, the nearest folder above it with a
-``plumbcheck.yml``: an edit may span repositories, and ``stop`` checks every
+``peachycheck.yml``: an edit may span repositories, and ``stop`` checks every
 repository with changes at or below the session's folder. Elsewhere the
 hooks do nothing, so they can be installed for the whole user;
-``PLUMBCHECK_HOOKS=off`` turns them off.
-A repository whose ``.venv`` has another version of plumbcheck answers
+``PEACHYCHECK_HOOKS=off`` turns them off.
+A repository whose ``.venv`` has another version of peachycheck answers
 with that one, so its pin wins over the user's install.
 """
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
 
-from plumbcheck import cli, config, linting
+from peachycheck import cli, config, linting
 
 ATTEMPTS: Final = 2  # blocked stops in a row before the agent may stop
 EDIT_FINDINGS: Final = 20  # shown after an edit
@@ -51,7 +51,7 @@ def _codex(payload: dict[str, Any]) -> bool:
 
 
 def _off() -> bool:
-    return os.environ.get("PLUMBCHECK_HOOKS") == "off"
+    return os.environ.get("PEACHYCHECK_HOOKS") == "off"
 
 
 def edited(payload: dict[str, Any]) -> list[str]:
@@ -100,7 +100,7 @@ def post_edit(payload: dict[str, Any]) -> Reply:
     return Reply(2, stderr="\n".join(messages)) if messages else Reply()
 
 
-COUNTERS: Final = Path("~/.cache/plumbcheck/stop")
+COUNTERS: Final = Path("~/.cache/peachycheck/stop")
 SEARCH_DEPTH: Final = 3  # of the folders below the session's for repositories
 
 
@@ -113,7 +113,7 @@ def roots(folder: Path) -> list[Path]:
     """The repositories the Stop hook checks for a session in ``folder``.
 
     Its own repository and those below it (side-by-side worktrees under one
-    parent, say), each with a ``plumbcheck.yml`` and changes since its base.
+    parent, say), each with a ``peachycheck.yml`` and changes since its base.
     """
     if _off():
         return []
@@ -167,7 +167,7 @@ def stop(
         counter.unlink(missing_ok=True)
         return allow
     reason = (
-        "plumbcheck's lint fails; fix every finding, then "
+        "peachycheck's lint fails; fix every finding, then "
         "finish:\n" + "\n".join(problems)
     )
     if attempts >= ATTEMPTS:
@@ -209,17 +209,17 @@ def run(event: str) -> int:
 
 
 def pinned(root: Path) -> Path | None:
-    """The ``plumbcheck`` of ``root``'s ``.venv``, if another version.
+    """The ``peachycheck`` of ``root``'s ``.venv``, if another version.
 
     ponytail: reads only ``.venv``; a moved UV_PROJECT_ENVIRONMENT is missed.
     """
-    command = root / ".venv" / "bin" / "plumbcheck"
+    command = root / ".venv" / "bin" / "peachycheck"
     found = sorted(
-        root.glob(".venv/lib/python*/site-packages/plumbcheck-*.dist-info")
+        root.glob(".venv/lib/python*/site-packages/peachycheck-*.dist-info")
     )
     if not found or not command.is_file():
         return None
-    version = found[-1].name.removeprefix("plumbcheck-")
+    version = found[-1].name.removeprefix("peachycheck-")
     return None if version == f"{cli.version()}.dist-info" else command
 
 
@@ -262,17 +262,20 @@ def _pinned_answer(
 
 def failed(payload: dict[str, Any], event: str, error: Exception) -> Reply:
     """Report a failure of the hook itself without blocking the agent."""
-    message = f"plumbcheck hook {event} failed: {error!r}"
+    message = f"peachycheck hook {event} failed: {error!r}"
     if _codex(payload) and event == "stop":
         return Reply(stdout=json.dumps({"systemMessage": message}))
     return Reply(0 if _codex(payload) else 1, stderr=message)
 
 
-MARK: Final = "plumbcheck hook "
+MARK: Final = "peachycheck hook "
+# The tool's name until 2026-10-24: installing replaces those hooks too.
+FORMER_MARK: Final = "plumbcheck hook "
 
 
 def _ours(hook: dict[str, Any]) -> bool:
-    return MARK in str(hook.get("command", ""))
+    command = str(hook.get("command", ""))
+    return MARK in command or FORMER_MARK in command
 
 
 def _others(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -321,8 +324,8 @@ def install(
 
     With ``remove``, take exactly our hooks out of them instead.
     """
-    found = shutil.which("plumbcheck")
-    command = found or str(Path(sys.executable).with_name("plumbcheck"))
+    found = shutil.which("peachycheck")
+    command = found or str(Path(sys.executable).with_name("peachycheck"))
     targets = [
         (home / ".claude" / "settings.json", CLAUDE_EDITS, claude),
         (home / ".codex" / "hooks.json", "apply_patch", codex),

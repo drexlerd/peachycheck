@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from plumbcheck import cli, config, hooks
+from peachycheck import cli, config, hooks
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,12 +21,12 @@ def test_the_version_is_the_project_s(
     assert cli.version() == project["version"]
     with pytest.raises(SystemExit):
         cli.main(["--version"])
-    assert capsys.readouterr().out == f"plumbcheck {cli.version()}\n"
+    assert capsys.readouterr().out == f"peachycheck {cli.version()}\n"
 
 
 @pytest.fixture
 def release(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, str]]:
-    """plumbcheck 0.1.0 from PyPI, offline; records ``uv add``."""
+    """peachycheck 0.1.0 from PyPI, offline; records ``uv add``."""
     monkeypatch.setattr(cli, "released", lambda: True)
     monkeypatch.setattr(cli, "version", lambda: "0.1.0")
 
@@ -58,18 +58,18 @@ def test_init_sets_a_repository_up_once(
     root = str(tmp_path)
     assert cli.main(["--root", root, "init", "--extends", org]) == 0
     own = (tmp_path / config.NAME).read_text()
-    assert own.endswith(f"EXTENDS: {org}\nPLUMBCHECK_VERSION: 0.1.0\n")
-    workflow = (tmp_path / ".github/workflows/plumbcheck.yml").read_text()
+    assert own.endswith(f"EXTENDS: {org}\nPEACHYCHECK_VERSION: 0.1.0\n")
+    workflow = (tmp_path / ".github/workflows/peachycheck.yml").read_text()
     assert workflow == (
         cli.WORKFLOW.format(ref="v0.1.0")
         + "        with:\n          token: ${{ secrets.SUBMODULES_TOKEN }}\n"
     )
     assert (tmp_path / "ruff.toml").read_text() == cli.INHERIT["ruff.toml"]
-    assert (tmp_path / ".plumbcheck" / "ruff.toml").is_file()
-    assert release == [(tmp_path, "plumbcheck==0.1.0")]
+    assert (tmp_path / ".peachycheck" / "ruff.toml").is_file()
+    assert release == [(tmp_path, "peachycheck==0.1.0")]
     first = capsys.readouterr().out
-    assert "plumbcheck.yml: written" in first
-    assert "plumbcheck==0.1.0 in the dev dependencies" in first
+    assert "peachycheck.yml: written" in first
+    assert "peachycheck==0.1.0 in the dev dependencies" in first
     assert cli.main(["--root", root, "init"]) == 0
     again = capsys.readouterr().out
     assert "written" not in again and "already" in again
@@ -86,10 +86,10 @@ def test_a_git_install_pins_its_commit_and_adds_no_dev_pin(
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
     assert cli.init(tmp_path) == 0
     own = (tmp_path / config.NAME).read_text()
-    assert own.endswith("\nPLUMBCHECK_VERSION: abc123\n")
+    assert own.endswith("\nPEACHYCHECK_VERSION: abc123\n")
     assert "EXTENDS" not in own
     assert release == []
-    assert (tmp_path / ".github/workflows/plumbcheck.yml").read_text() == (
+    assert (tmp_path / ".github/workflows/peachycheck.yml").read_text() == (
         cli.WORKFLOW.format(ref="abc123")
     )
 
@@ -100,29 +100,29 @@ def test_upgrade_moves_the_pins(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     own = tmp_path / config.NAME
-    own.write_text("PLUMBCHECK_VERSION: abc123\nDISABLE_LINTERS: [X]\n")
+    own.write_text("PEACHYCHECK_VERSION: abc123\nDISABLE_LINTERS: [X]\n")
     workflow = tmp_path / ".github/workflows/check.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(cli.WORKFLOW.format(ref="abc123"))
     reusable = tmp_path / ".github/workflows/reusable.yml"
     reusable.write_text(
-        "uses: drexlerd/plumbcheck/.github/workflows/check.yml@abc  # pinned\n"
+        "uses: drexlerd/peachycheck/.github/workflows/check.yml@abc  # pinned\n"
     )
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text('[dependency-groups]\ndev = ["plumbcheck"]\n')
+    pyproject.write_text('[dependency-groups]\ndev = ["peachycheck"]\n')
     assert cli.upgrade(tmp_path, None) == 0
     assert own.read_text() == (
-        "PLUMBCHECK_VERSION: 0.1.0\nDISABLE_LINTERS: [X]\n"
+        "PEACHYCHECK_VERSION: 0.1.0\nDISABLE_LINTERS: [X]\n"
     )
     assert workflow.read_text() == cli.WORKFLOW.format(ref="v0.1.0")
     assert reusable.read_text() == (
-        "uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0  # pinned\n"
+        "uses: drexlerd/peachycheck/.github/workflows/check.yml@v0.1.0  # pinned\n"
     )
-    assert release == [(tmp_path, "plumbcheck==0.1.0")]
+    assert release == [(tmp_path, "peachycheck==0.1.0")]
     assert cli.main(["--root", str(tmp_path), "upgrade", "--to", "v0.3.1"]) == 0
-    assert "PLUMBCHECK_VERSION: 0.3.1\n" in own.read_text()
+    assert "PEACHYCHECK_VERSION: 0.3.1\n" in own.read_text()
     assert workflow.read_text() == cli.WORKFLOW.format(ref="v0.3.1")
-    assert release[-1] == (tmp_path, "plumbcheck==0.3.1")
+    assert release[-1] == (tmp_path, "peachycheck==0.3.1")
     capsys.readouterr()
     assert cli.upgrade(tmp_path, "0.3.1") == 0
     assert len(release) == 2
@@ -134,15 +134,15 @@ def test_upgrade_moves_the_pins(
     # A file without the version gets it.
     own.write_text("DISABLE_LINTERS: [X]\n")
     assert cli.upgrade(tmp_path, "0.4.0") == 0
-    assert own.read_text().endswith("PLUMBCHECK_VERSION: 0.4.0\n")
+    assert own.read_text().endswith("PEACHYCHECK_VERSION: 0.4.0\n")
     assert cli.upgrade(tmp_path / "missing", None) == 1
 
 
 def _venv(root: Path, version: str, answer: str) -> None:
-    """``root``'s .venv with plumbcheck ``version`` answering ``answer``."""
+    """``root``'s .venv with peachycheck ``version`` answering ``answer``."""
     site = root / ".venv/lib/python3.12/site-packages"
-    (site / f"plumbcheck-{version}.dist-info").mkdir(parents=True)
-    command = root / ".venv/bin/plumbcheck"
+    (site / f"peachycheck-{version}.dist-info").mkdir(parents=True)
+    command = root / ".venv/bin/peachycheck"
     command.parent.mkdir(parents=True)
     command.write_text(f"#!/bin/sh\ncat > /dev/null\n{answer}\n")
     command.chmod(0o755)
@@ -161,7 +161,7 @@ def test_a_hook_answers_with_the_repository_s_own_version(
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / config.NAME).write_text("# hooked\n")
     _venv(tmp_path, "0.0.1", "echo pinned >&2; exit 2")
-    assert hooks.pinned(tmp_path) == tmp_path / ".venv/bin/plumbcheck"
+    assert hooks.pinned(tmp_path) == tmp_path / ".venv/bin/peachycheck"
     assert _hook(monkeypatch, tmp_path) == 2
     assert capsys.readouterr().err == "pinned\n"
     # The same version answers here.
@@ -196,7 +196,7 @@ def dists(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
         ["uv", "build", "--quiet", "--out-dir", str(out), str(ROOT)],
         check=True,
     )
-    return sorted(out.glob("plumbcheck-*"))
+    return sorted(out.glob("peachycheck-*"))
 
 
 def _members(dist: Path) -> dict[str, bytes]:
@@ -218,7 +218,7 @@ def test_no_package_contains_an_organization_s_content(
     for dist in dists:
         members = _members(dist)
         # The defaults ship; the sample organization of the tests does not.
-        assert any(n.endswith("defaults/plumbcheck.yml") for n in members)
+        assert any(n.endswith("defaults/peachycheck.yml") for n in members)
         assert not [n for n in members if "fixtures/" in n], dist.name
 
 

@@ -1,4 +1,4 @@
-# The sample organization's ruff settings; in .plumbcheck/, so paths start
+# The sample organization's ruff settings; in .peachycheck/, so paths start
 # at its parent, the repository.
 line-length = 80
 

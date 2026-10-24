@@ -1,15 +1,15 @@
 {
-  "name": "plumbcheck",
-  "description": "The plumbcheck hooks for Claude Code",
+  "name": "peachycheck",
+  "description": "The peachycheck hooks for Claude Code",
   "owner": {
     "name": "Dominik Drexler",
     "url": "https://github.com/drexlerd"
   },
   "plugins": [
     {
-      "name": "plumbcheck",
+      "name": "peachycheck",
       "source": "./",
-      "description": "Lint after each edit and before the agent stops, with the plumbcheck on PATH"
+      "description": "Lint after each edit and before the agent stops, with the peachycheck on PATH"
     }
   ]
 }

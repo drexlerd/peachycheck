@@ -1,11 +1,11 @@
-# plumbcheck's own style: stricter than its defaults (src/plumbcheck/defaults/rules).
+# peachycheck's own style: stricter than its defaults (src/peachycheck/defaults/rules).
 # Only settings that differ from ruff's defaults, each with its reason.
 
 # Narrower than the default 88, so two files fit side by side.
 line-length = 80
-# The oldest Python plumbcheck supports.
+# The oldest Python peachycheck supports.
 target-version = "py312"
-# The fixtures are sample repositories and guides, not plumbcheck's code.
+# The fixtures are sample repositories and guides, not peachycheck's code.
 extend-exclude = ["tests/fixtures"]
 
 [lint]

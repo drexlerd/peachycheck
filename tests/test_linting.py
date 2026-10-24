@@ -1,4 +1,4 @@
-"""plumbcheck.yml, the linters, and the Claude Code and Codex hooks."""
+"""peachycheck.yml, the linters, and the Claude Code and Codex hooks."""
 
 import gzip
 import io
@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import yaml
 
-from plumbcheck import cli, config, hooks, linting
+from peachycheck import cli, config, hooks, linting
 
 ORG = Path(__file__).parent / "fixtures" / "org"
 
@@ -58,7 +58,7 @@ def _repository(
 ) -> tuple[Path, str]:
     """A committed repository of the sample organization, its base synced.
 
-    Without ``configured``, it has no plumbcheck.yml. Its environment, for
+    Without ``configured``, it has no peachycheck.yml. Its environment, for
     pyright, is the tests' own and, as usual, ignored.
     """
     root = tmp_path / "repository"
@@ -81,7 +81,7 @@ def _rules(found: linting.Result) -> set[tuple[str, str, str]]:
     return {(f.path, f.linter, f.rule) for f in found.findings}
 
 
-# --- plumbcheck.yml
+# --- peachycheck.yml
 
 
 def test_later_files_win_mappings_merge_and_named_lists_append(
@@ -117,7 +117,7 @@ def test_an_extended_url_is_fetched_once(
         return b"A: 1\nB: 1\n"
 
     monkeypatch.setattr(config, "_download", download)
-    url = "https://example.org/x/plumbcheck.yml"
+    url = "https://example.org/x/peachycheck.yml"
     own = _write(tmp_path / config.NAME, f"EXTENDS: {url}\nB: 2\n")
     loaded = config.load(tmp_path)
     assert (loaded["A"], loaded["B"]) == (1, 2) and "LINTERS" in loaded
@@ -144,7 +144,7 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     fetched: list[str] = []
     data = _archive(
         {
-            "plumbcheck.yml": "EXTENDS: base.yml\nFILES:\n"
+            "peachycheck.yml": "EXTENDS: base.yml\nFILES:\n"
             "  pyproject.toml: {ruff.toml: rules/ruff.toml, vale: rules/vale}\n",
             "base.yml": "FILES: {general: {.vale.ini: rules/.vale.ini}}\n",
             "rules/.vale.ini": "StylesPath = vale\n",
@@ -158,10 +158,10 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
         return data
 
     monkeypatch.setattr(config, "_download", download)
-    url = "https://raw.githubusercontent.com/o/org/abc/plumbcheck.yml"
+    url = "https://raw.githubusercontent.com/o/org/abc/peachycheck.yml"
     _write(tmp_path / config.NAME, f"EXTENDS: {url}\n")
     loaded = config.load(tmp_path)
-    snapshot = tmp_path / "home/.cache/plumbcheck/extends/o/org/abc"
+    snapshot = tmp_path / "home/.cache/peachycheck/extends/o/org/abc"
     assert loaded["FILES"]["general"][".vale.ini"] == str(
         snapshot / "rules/.vale.ini"
     )
@@ -172,11 +172,11 @@ def test_a_github_file_resolves_its_paths_in_its_repository_s_snapshot(
     (tmp_path / "uv.lock").write_text("")
     # A folder brings every file below it.
     assert cli.sync(tmp_path, check=False) == [
-        ".plumbcheck/.vale.ini",
-        ".plumbcheck/ruff.toml",
-        ".plumbcheck/vale/A/B.yml",
+        ".peachycheck/.vale.ini",
+        ".peachycheck/ruff.toml",
+        ".peachycheck/vale/A/B.yml",
     ]
-    base = tmp_path / ".plumbcheck"
+    base = tmp_path / ".peachycheck"
     assert (base / "ruff.toml").read_text() == "line-length = 70\n"
     assert (base / "vale/A/B.yml").is_file()
     config.load(tmp_path)
@@ -293,35 +293,35 @@ def test_the_base_of_general_and_of_the_markers_present_is_synced(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text("")
-    # Without a plumbcheck.yml, no base: plumbcheck has no opinions.
+    # Without a peachycheck.yml, no base: peachycheck has no opinions.
     assert cli.sync(tmp_path, check=True) == []
-    # The organization's base lands in .plumbcheck/: general and per type.
+    # The organization's base lands in .peachycheck/: general and per type.
     _write(tmp_path / config.NAME, f"EXTENDS: {ORG / config.NAME}\n")
     written = [
-        ".plumbcheck/.clang-tidy",
-        ".plumbcheck/.vale.ini",
-        ".plumbcheck/pyrightconfig.json",
-        ".plumbcheck/ruff.toml",
+        ".peachycheck/.clang-tidy",
+        ".peachycheck/.vale.ini",
+        ".peachycheck/pyrightconfig.json",
+        ".peachycheck/ruff.toml",
     ]
     assert cli.sync(tmp_path, check=True) == written
     assert cli.sync(tmp_path, check=False) == written
     assert cli.sync(tmp_path, check=True) == []
-    assert (tmp_path / ".plumbcheck/ruff.toml").read_text() == (
+    assert (tmp_path / ".peachycheck/ruff.toml").read_text() == (
         (ORG / "rules" / "ruff.toml").read_text()
     )
     # Only the folder counts: a stale or changed file differs.
-    (tmp_path / ".plumbcheck/old.toml").write_text("")
-    (tmp_path / ".plumbcheck/ruff.toml").write_text("line-length = 120\n")
+    (tmp_path / ".peachycheck/old.toml").write_text("")
+    (tmp_path / ".peachycheck/ruff.toml").write_text("line-length = 120\n")
     assert cli.main(["--root", str(tmp_path), "sync", "--check"]) == 1
     assert cli.sync(tmp_path, check=False) == [
-        ".plumbcheck/old.toml",
-        ".plumbcheck/ruff.toml",
+        ".peachycheck/old.toml",
+        ".peachycheck/ruff.toml",
     ]
-    assert not (tmp_path / ".plumbcheck/old.toml").exists()
+    assert not (tmp_path / ".peachycheck/old.toml").exists()
     # What git ignores there, such as a tool's cache, does not count.
     _git(tmp_path, "init", "-q")
-    _write(tmp_path / ".plumbcheck/.ruff_cache/.gitignore", "*\n")
-    _write(tmp_path / ".plumbcheck/.ruff_cache/x", "")
+    _write(tmp_path / ".peachycheck/.ruff_cache/.gitignore", "*\n")
+    _write(tmp_path / ".peachycheck/.ruff_cache/x", "")
     assert cli.sync(tmp_path, check=True) == []
     # The repository's own configurations inherit the base.
     assert cli.inherit(tmp_path) == ["ruff.toml", "pyrightconfig.json"]
@@ -330,7 +330,7 @@ def test_the_base_of_general_and_of_the_markers_present_is_synced(
     assert cli.sync(tmp_path, check=True) == []
     # Without the marker, its files go.
     (tmp_path / "pyproject.toml").unlink()
-    assert cli.sync(tmp_path, check=True) == [".plumbcheck/pyrightconfig.json"]
+    assert cli.sync(tmp_path, check=True) == [".peachycheck/pyrightconfig.json"]
 
 
 def test_changed_files_are_modified_and_new_ones_and_nothing_is_staged(
@@ -401,7 +401,7 @@ def test_a_linter_s_config_is_the_repository_s_the_base_or_none(
     base = root / config.BASE
     assert flags("ruff.toml") == ["-c", str(base / "ruff.toml")]
     assert flags(".missing") == []
-    _write(root / "ruff.toml", 'extend = ".plumbcheck/ruff.toml"\n')
+    _write(root / "ruff.toml", 'extend = ".peachycheck/ruff.toml"\n')
     assert flags("ruff.toml") == ["-c", str(root / "ruff.toml")]
 
 
@@ -444,7 +444,7 @@ def test_a_tool_that_needs_a_configuration_skips_without_one(
 def test_a_missing_requirement_is_a_problem_not_a_pass(tmp_path: Path) -> None:
     root, _ = _repository(tmp_path, {"a.cpp": "int f();\n"})
     assert linting.lint(root, ["a.cpp"]).problems == [
-        "CPP_CLANG_TIDY needs build/plumbcheck/compile_commands.json or "
+        "CPP_CLANG_TIDY needs build/peachycheck/compile_commands.json or "
         "build/compile_commands.json: configure CMake with "
         "CMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
@@ -547,7 +547,7 @@ def test_each_linter_flags_a_violation_and_links_its_rule(
         (root / "node_modules").symlink_to(node_modules)
         _write(root / "eslint.config.mjs", ESLINT_CONFIG)
     _write(
-        root / "build" / "plumbcheck" / "compile_commands.json",
+        root / "build" / "peachycheck" / "compile_commands.json",
         json.dumps(
             [
                 {
@@ -595,7 +595,7 @@ def test_a_complex_function_is_a_finding(
 
 
 def _hooked(tmp_path: Path, contents: dict[str, str]) -> tuple[Path, str]:
-    """A repository the hooks act in: it has a plumbcheck.yml."""
+    """A repository the hooks act in: it has a peachycheck.yml."""
     return _repository(tmp_path, contents)
 
 
@@ -668,7 +668,7 @@ def test_stop_blocks_twice_then_lets_the_agent_stop(tmp_path: Path) -> None:
     assert hooks.stop(claude, check) == hooks.Reply()
 
 
-def test_hooks_act_only_with_a_plumbcheck_yml_and_not_when_off(
+def test_hooks_act_only_with_a_peachycheck_yml_and_not_when_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "plain").mkdir()
@@ -698,7 +698,7 @@ def test_hooks_act_only_with_a_plumbcheck_yml_and_not_when_off(
     assert hooks.post_edit({**payloads(hooked)[0], "cwd": str(root)}).code == 2
     edit, codex = payloads(hooked)
     assert hooks.stop(codex, check).stdout != "{}"
-    monkeypatch.setenv("PLUMBCHECK_HOOKS", "off")
+    monkeypatch.setenv("PEACHYCHECK_HOOKS", "off")
     assert hooks.post_edit(edit) == hooks.Reply()
     assert hooks.stop(codex, check) == hooks.Reply(stdout="{}")
 
@@ -747,8 +747,8 @@ def test_hooks_install_is_idempotent_and_keeps_other_hooks(
     assert written["model"] == "m"
     post, stop = written["hooks"]["PostToolUse"], written["hooks"]["Stop"]
     assert post[0] == other and post[1]["matcher"] == "Edit|Write|MultiEdit"
-    assert post[1]["hooks"][0]["command"] == "/bin/plumbcheck hook post-edit"
-    assert stop[0]["hooks"][0]["command"] == "/bin/plumbcheck hook stop"
+    assert post[1]["hooks"][0]["command"] == "/bin/peachycheck hook post-edit"
+    assert stop[0]["hooks"][0]["command"] == "/bin/peachycheck hook stop"
     codex = json.loads((tmp_path / ".codex" / "hooks.json").read_text())
     assert codex["hooks"]["PostToolUse"][0]["matcher"] == "apply_patch"
     assert len(codex["hooks"]["Stop"]) == 1
@@ -796,11 +796,11 @@ def _sibling(parent: Path, name: str, ruff: str) -> Path:
 def test_one_patch_across_two_repositories_judges_each_file_by_its_own(
     tmp_path: Path,
 ) -> None:
-    strict = _sibling(tmp_path, "strict", 'extend = ".plumbcheck/ruff.toml"\n')
+    strict = _sibling(tmp_path, "strict", 'extend = ".peachycheck/ruff.toml"\n')
     loose = _sibling(
         tmp_path,
         "loose",
-        'extend = ".plumbcheck/ruff.toml"\n[lint]\nextend-ignore = ["N802"]\n',
+        'extend = ".peachycheck/ruff.toml"\n[lint]\nextend-ignore = ["N802"]\n',
     )
     for root in (strict, loose):
         (root / "a.py").write_text(VIOLATION)

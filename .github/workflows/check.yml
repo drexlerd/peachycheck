@@ -1,9 +1,9 @@
-# plumbcheck's check as a reusable workflow, for a repository that prefers
+# peachycheck's check as a reusable workflow, for a repository that prefers
 # three lines to a job:
 #
 #   jobs:
-#     plumbcheck:
-#       uses: drexlerd/plumbcheck/.github/workflows/check.yml@v0.1.0
+#     peachycheck:
+#       uses: drexlerd/peachycheck/.github/workflows/check.yml@v0.1.0
 #       secrets: inherit   # SUBMODULES_TOKEN for private submodules
 #       # with:
 #       #   prepare: npm ci  # what the linters need first
@@ -11,13 +11,13 @@
 # It runs the action of this repository (action.yml) at the same release;
 # see there. To keep a required status check's name, or to pin a commit,
 # use the action in a job of your own instead.
-name: plumbcheck
+name: peachycheck
 
 on:
   workflow_call:
     inputs:
       version:
-        description: The plumbcheck to install; see action.yml.
+        description: The peachycheck to install; see action.yml.
         type: string
         default: ""
       prepare:
@@ -33,11 +33,11 @@ permissions:
   contents: read
 
 jobs:
-  plumbcheck:
+  peachycheck:
     runs-on: ubuntu-latest
     steps:
       # The release this file belongs to; release.yml checks it.
-      - uses: drexlerd/plumbcheck@v0.1.0
+      - uses: drexlerd/peachycheck@v0.1.0
         with:
           version: ${{ inputs.version }}
           prepare: ${{ inputs.prepare }}
