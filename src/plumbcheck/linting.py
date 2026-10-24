@@ -191,11 +191,12 @@ def required(root: Path, spec: dict[str, Any]) -> Path | None:
 def _command(root: Path, spec: dict[str, Any], key: str) -> list[str]:
     """The linter's command ``key`` (``command`` or ``fix``) as arguments.
 
-    ``{requires}`` is the folder of the file ``required`` found.
+    ``{required}`` is the file ``required`` found, ``{requires}`` its folder.
     """
     there = required(root, spec) or root
     values = {
         "python": sys.executable,
+        "required": str(there),
         "requires": str(there if there == root else there.parent),
     }
     line = shlex.split(str(spec[key]).format_map(values))
@@ -273,12 +274,28 @@ def _gitleaks(text: str) -> list[Raw]:
     ]
 
 
+def _pyright(text: str) -> list[Raw]:
+    found = cast(dict[str, Any], json.loads(text or "{}"))
+    return [
+        (
+            d["file"],
+            int(d["range"]["start"]["line"]) + 1,
+            d.get("rule") or "pyright",
+            d["message"],
+            "",
+        )
+        for d in cast(list[dict[str, Any]], found.get("generalDiagnostics", []))
+        if d["severity"] in ("error", "warning")
+    ]
+
+
 PARSERS: Final[dict[str, Callable[[str], list[Raw]]]] = {
     "json-ruff": _ruff,
     "json-eslint": _eslint,
     "json-vale": _vale,
     "json-gitleaks": _gitleaks,
     "json-j2lint": _j2lint,
+    "json-pyright": _pyright,
 }
 
 
@@ -352,8 +369,12 @@ def _jobs(spec: dict[str, Any], paths: list[str]) -> list[list[str]]:
     """``paths`` in runs of a linter, spread over the workers.
 
     A linter like clang-tidy works through its files one after another, so
-    one run of all of them would use a single core.
+    one run of all of them would use a single core. A linter with
+    ``one_run``, like pyright, analyzes the imports its files share once
+    and spreads the work itself.
     """
+    if spec.get("one_run"):
+        return [paths]
     spread = -(-len(paths) // WORKERS)
     size = 1 if spec.get("per_file") else max(1, min(CHUNK, spread))
     return [paths[i : i + size] for i in range(0, len(paths), size)]
@@ -521,6 +542,7 @@ def install(versions: dict[str, dict[str, str]]) -> list[str]:
         "clang-tidy",
         "clang-format",
         "j2lint",
+        "pyright",
     ):
         where = shutil.which(tool, path=search_path())
         done.append(f"{tool}: {where or 'missing; reinstall plumbcheck'}")

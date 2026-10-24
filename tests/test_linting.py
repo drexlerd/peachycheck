@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -57,7 +58,8 @@ def _repository(
 ) -> tuple[Path, str]:
     """A committed repository of the sample organization, its base synced.
 
-    Without ``configured``, it has no plumbcheck.yml.
+    Without ``configured``, it has no plumbcheck.yml. Its environment, for
+    pyright, is the tests' own and, as usual, ignored.
     """
     root = tmp_path / "repository"
     root.mkdir()
@@ -69,6 +71,9 @@ def _repository(
     _git(root, "init", "-q")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "base")
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "bin" / "python").symlink_to(sys.executable)
+    (root / ".git" / "info" / "exclude").write_text(".venv/\n")
     return root, _git(root, "rev-parse", "HEAD").strip()
 
 
@@ -249,6 +254,16 @@ def test_each_output_kind_parses_path_line_rule_and_message() -> None:
     assert linting.parse(
         specs["SPELL_CODESPELL"], "a.rst:1: teh ==> the\n"
     ) == [("a.rst", 1, "misspelling", "teh ==> the", "")]
+    pyright = (
+        '{"generalDiagnostics": ['
+        '{"file": "/r/a.py", "severity": "error", "message": "bad",'
+        ' "range": {"start": {"line": 0}}, "rule": "reportAssignmentType"},'
+        '{"file": "/r/a.py", "severity": "information", "message": "fyi",'
+        ' "range": {"start": {"line": 1}}}]}'
+    )
+    assert linting.parse({"output": "json-pyright"}, pyright) == [
+        ("/r/a.py", 1, "reportAssignmentType", "bad", "")
+    ]
 
 
 # --- links
@@ -472,6 +487,7 @@ _LEAK = "vA0jG5sF1dH6cN4bY7rX2wP9mLk3Tv8qZ"[::-1]
 FIRES = [
     ("PYTHON_RUFF", "a.py", VIOLATION, "https://docs.astral.sh/ruff/rules/"),
     ("PYTHON_RUFF_FORMAT", "a.py", CLEAN.replace("left + right", "left+right"), "https://docs.astral.sh/ruff/"),
+    ("PYTHON_PYRIGHT", "a.py", 'count: int = "one"\n', "https://github.com/microsoft/pyright/blob/main/docs/configuration.md#reportAssignmentType"),
     ("J2LINT", "a.j2", "{% if a %}{% if b %}\nx\n{% endif %}{% endif %}\n", "https://github.com/aristanetworks/j2lint"),
     ("RST_DOC8", "a.rst", "The gate measures the change.   \n", "https://github.com/PyCQA/doc8"),
     ("SPELL_VALE", "a.rst", "The gate is is ready.\n", "https://vale.sh/"),

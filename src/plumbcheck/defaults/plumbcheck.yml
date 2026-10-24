@@ -34,12 +34,13 @@
 # without one (the tool cannot run without), and `merge: yaml` lays the
 # repository's file over the base (clang-tidy cannot extend another file).
 # `output` parses the findings: json-ruff, json-eslint, json-vale,
-# json-gitleaks, json-j2lint or regex:<pattern> (groups path, line, rule,
+# json-gitleaks, json-j2lint, json-pyright or regex:<pattern> (groups path, line, rule,
 # message; `rule` names the rule when the pattern has none), read from
-# stdout, or from stderr with `stream: stderr`. `ok` lists the
+# stdout, or from stderr with `stream: stderr`. `one_run` checks all files
+# in one run (the linter parallelizes itself). `ok` lists the
 # exit codes that mean "ran". `requires` is a file the linter needs, or a
-# list of them of which the first that exists counts ({requires} in
-# `command` is its folder), and `missing` says how to get it;
+# list of them of which the first that exists counts ({required} in
+# `command` is that file, {requires} its folder), and `missing` says how to get it;
 # <LINTER>_<requires_key> (default <LINTER>_REQUIRES) replaces `requires`.
 # A finding links its rule's documentation: the URL the linter reports
 # (ruff), else `rule_link`, a template or templates by rule prefix ({rule};
@@ -60,6 +61,19 @@ LINTERS:
     fix: ruff format --no-cache --force-exclude --quiet
     config: {file: ruff.toml, flag: --config}
     output: json-ruff
+  PYTHON_PYRIGHT:
+    extensions: [.py]
+    link: https://microsoft.github.io/pyright/#/configuration
+    rule_link: https://github.com/microsoft/pyright/blob/main/docs/configuration.md#{rule}
+    # pyright reads the repository's pyrightconfig.json (or [tool.pyright])
+    # itself, and resolves imports in its environment: the first of
+    # `requires`, or the interpreter PYTHON_PYRIGHT_PYTHON names.
+    command: pyright --outputjson --threads --pythonpath {required}
+    output: json-pyright
+    one_run: true
+    requires: [.venv/bin/python]
+    requires_key: PYTHON
+    missing: create the repository's environment first (such as `uv sync`)
   J2LINT:
     extensions: [.j2, .jinja, .jinja2]
     link: https://github.com/aristanetworks/j2lint#rules
@@ -133,7 +147,7 @@ LINTERS:
 
 # The tools `plumbcheck install` downloads into ~/.cache/plumbcheck/bin,
 # checked against their sha256 (linux x64). ruff, codespell, doc8,
-# clang-tidy, clang-format and j2lint are pinned Python dependencies of plumbcheck; eslint
+# clang-tidy, clang-format, j2lint and pyright are pinned Python dependencies of plumbcheck; eslint
 # is the repository's own (node_modules).
 VERSIONS:
   vale:

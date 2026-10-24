@@ -1,9 +1,9 @@
 # plumbcheck
 
-One `plumbcheck.yml` per repository runs the native linters (ruff, eslint,
-clang-tidy, clang-format, vale, doc8, codespell, j2lint, gitleaks) and the hooks that
-apply them while Claude Code or Codex works. It only lints: builds, tests and
-type checks stay in the repository's own CI. Locally, in the agents' hooks
+One `plumbcheck.yml` per repository runs the native linters (ruff, pyright,
+eslint, clang-tidy, clang-format, vale, doc8, codespell, j2lint, gitleaks)
+and the hooks that apply them while Claude Code or Codex works. It only
+checks: builds and tests stay in the repository's own CI. Locally, in the agents' hooks
 and in CI it is the same command with the same configuration, so a change
 that passes one passes all.
 
@@ -29,13 +29,12 @@ overriding only what it must.
 
 ## Languages
 
-- [x] Python (`.py`): ruff, ruff format
+- [x] Python (`.py`): ruff, ruff format, pyright
 - [x] C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.h`, `.tpp`, `.ipp`): clang-tidy, clang-format
 - [x] TypeScript (`.ts`, `.tsx`): ESLint
 - [x] reStructuredText (`.rst`): doc8, vale, codespell
 - [x] Jinja (`.j2`, `.jinja`, `.jinja2`): j2lint
 - [x] Secrets (every file): gitleaks
-- [ ] Python types (`.py`): pyright
 - [ ] LaTeX (`.tex`)
 
 ## Install
@@ -47,8 +46,8 @@ plumbcheck install             # download the pinned vale and gitleaks
 plumbcheck hooks install       # lint after each edit and before Claude/Codex stop
 ```
 
-ruff, codespell, doc8, clang-tidy, clang-format and j2lint are pinned
-dependencies; vale and gitleaks are downloaded into `~/.cache/plumbcheck/bin`, checked against their
+ruff, codespell, doc8, clang-tidy, clang-format, j2lint and pyright are
+pinned dependencies (pyright uses Node from `PATH` or installs it); vale and gitleaks are downloaded into `~/.cache/plumbcheck/bin`, checked against their
 sha256 (Linux x64); eslint is the repository's own (`node_modules`).
 
 ## Set a repository up
@@ -209,6 +208,7 @@ without a configuration, it is skipped. Coarse switches stay in
 | linter | files | tool |
 |---|---|---|
 | `PYTHON_RUFF`, `PYTHON_RUFF_FORMAT` | `.py` | ruff |
+| `PYTHON_PYRIGHT` | `.py` | pyright in the repository's environment (`.venv`, or `PYTHON_PYRIGHT_PYTHON`) |
 | `J2LINT` | `.j2`, `.jinja`, `.jinja2` | j2lint |
 | `RST_DOC8`, `SPELL_VALE`, `SPELL_CODESPELL` | `.rst` | doc8, vale, codespell |
 | `TYPESCRIPT_ESLINT` | `.ts`, `.tsx` | the repository's `node_modules/.bin/eslint` |
