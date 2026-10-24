@@ -128,13 +128,15 @@ def _config(root: Path, wanted: dict[str, Any]) -> Path | None:
     """The configuration file a linter gets in ``root``, if any.
 
     With ``merge: yaml``, the repository's own file is laid over the base
-    in ``.plumbcheck/``: a written copy holds both.
+    in ``.plumbcheck/``: a written copy holds both. Without a base, none:
+    clang-tidy finds the repository's file itself, and the files in
+    subfolders that adjust it (a given file would hide those).
     """
     chosen = config.rule_file(root, wanted["file"])
     base = root / config.BASE / wanted["file"]
     own = root / wanted["file"]
-    if wanted.get("merge") == "yaml" and own.is_file() and base.is_file():
-        return merged_yaml(base, own)
+    if wanted.get("merge") == "yaml" and own.is_file():
+        return merged_yaml(base, own) if base.is_file() else None
     return chosen
 
 

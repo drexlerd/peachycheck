@@ -882,3 +882,37 @@ def test_header_findings_from_another_run_are_kept(
     assert ("include/a.hpp", "FAKE", "header") not in _rules(
         linting.lint(root, ["src/a.cpp"])
     )
+
+
+CONFIG_LINTER = """\
+import sys
+given = "--cfg" in sys.argv
+print(f"src/a.cpp:1: config given: {given} [cfg]")
+"""
+CONFIG_SPEC = """\
+ENABLE_LINTERS: [FAKE]
+LINTERS:
+  FAKE:
+    extensions: [.cpp]
+    command: "{python} fake.py"
+    config: {file: .fake.yml, flag: --cfg, merge: yaml}
+    output: 'regex:^(?P<path>[^:]+):(?P<line>\\d+): (?P<message>.*) \\[(?P<rule>\\w+)\\]$'
+"""
+
+
+def test_a_merged_config_is_given_only_over_a_base(tmp_path: Path) -> None:
+    # Without a base the tool finds the repository's file itself, and the
+    # files in subfolders that adjust it; a given file would hide those.
+    contents = {
+        "fake.py": CONFIG_LINTER,
+        config.NAME: CONFIG_SPEC,
+        "src/a.cpp": "",
+    }
+    root, _ = _repository(
+        tmp_path, contents | {".fake.yml": "A: 1\n"}, configured=False
+    )
+    messages = {f.message for f in linting.lint(root, ["src/a.cpp"]).findings}
+    assert messages == {"config given: False"}
+    _write(root / config.BASE / ".fake.yml", "B: 2\n")
+    messages = {f.message for f in linting.lint(root, ["src/a.cpp"]).findings}
+    assert messages == {"config given: True"}
