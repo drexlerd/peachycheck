@@ -478,6 +478,7 @@ FIRES = [
     ("SPELL_CODESPELL", "a.rst", "The gate measures teh change.\n", "https://github.com/codespell-project/"),
     ("TYPESCRIPT_ESLINT", "a.ts", "var count = 1;\nexport const same = count;\n", "https://eslint.org/docs/latest/rules/no-var"),
     ("CPP_CLANG_TIDY", "a.cpp", "struct N {};\nN* make() { return new N; }\n", "https://clang.llvm.org/extra/clang-tidy/checks/cppcoreguidelines/owning-memory.html"),
+    ("CPP_CLANG_FORMAT", "a.cpp", "int  f( int a ){return a;}\n", "https://clang.llvm.org/docs/ClangFormatStyleOptions.html"),
     ("REPOSITORY_GITLEAKS", "a.txt", f'api_key = "{_LEAK}"\n', "https://github.com/gitleaks/"),
 ]  # fmt: skip
 ESLINT_CONFIG = """import tseslint from 'typescript-eslint';

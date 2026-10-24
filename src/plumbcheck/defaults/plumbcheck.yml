@@ -35,7 +35,8 @@
 # repository's file over the base (clang-tidy cannot extend another file).
 # `output` parses the findings: json-ruff, json-eslint, json-vale,
 # json-gitleaks, json-j2lint or regex:<pattern> (groups path, line, rule,
-# message; `rule` names the rule when the pattern has none). `ok` lists the
+# message; `rule` names the rule when the pattern has none), read from
+# stdout, or from stderr with `stream: stderr`. `ok` lists the
 # exit codes that mean "ran". `requires` is a file the linter needs, or a
 # list of them of which the first that exists counts ({requires} in
 # `command` is its folder), and `missing` says how to get it;
@@ -111,6 +112,15 @@ LINTERS:
     requires: [build/plumbcheck/compile_commands.json, build/compile_commands.json]
     requires_key: COMPILE_COMMANDS
     missing: configure CMake with CMAKE_EXPORT_COMPILE_COMMANDS=ON
+  CPP_CLANG_FORMAT:
+    extensions: [.cpp, .cc, .cxx, .hpp, .hh, .h, .tpp, .ipp]
+    link: https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+    # Each file gets the nearest .clang-format above it, else LLVM's style.
+    command: clang-format --dry-run
+    fix: clang-format -i
+    output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: warning: (?P<message>.*) \[-W(?P<rule>clang-format-violations)\]$'
+    stream: stderr
+    ok: [0]
   REPOSITORY_GITLEAKS:
     link: https://github.com/gitleaks/gitleaks
     # One path per run; plumbcheck runs it per file.
@@ -123,7 +133,7 @@ LINTERS:
 
 # The tools `plumbcheck install` downloads into ~/.cache/plumbcheck/bin,
 # checked against their sha256 (linux x64). ruff, codespell, doc8,
-# clang-tidy and j2lint are pinned Python dependencies of plumbcheck; eslint
+# clang-tidy, clang-format and j2lint are pinned Python dependencies of plumbcheck; eslint
 # is the repository's own (node_modules).
 VERSIONS:
   vale:

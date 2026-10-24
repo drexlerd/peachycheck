@@ -331,13 +331,12 @@ def _run(
         return Result(
             problems=[f"{name} failed (exit {result.returncode}):\n{tail}"]
         )
+    text = result.stderr if spec.get("stream") == "stderr" else result.stdout
     try:
-        raw = parse(spec, result.stdout)
+        raw = parse(spec, text)
     except (ValueError, KeyError) as error:
         return Result(
-            problems=[
-                f"{name}: unreadable output ({error}):\n{result.stdout[-1500:]}"
-            ]
+            problems=[f"{name}: unreadable output ({error}):\n{text[-1500:]}"]
         )
     found = [
         Finding(path, line, name, rule, message.strip(), u or link(spec, rule))
@@ -515,7 +514,14 @@ def install(versions: dict[str, dict[str, str]]) -> list[str]:
         (folder / name).chmod(0o755)
         stamp.touch()
         done.append(f"{name} {pin['version']}: downloaded")
-    for tool in ("ruff", "codespell", "doc8", "clang-tidy", "j2lint"):
+    for tool in (
+        "ruff",
+        "codespell",
+        "doc8",
+        "clang-tidy",
+        "clang-format",
+        "j2lint",
+    ):
         where = shutil.which(tool, path=search_path())
         done.append(f"{tool}: {where or 'missing; reinstall plumbcheck'}")
     return done

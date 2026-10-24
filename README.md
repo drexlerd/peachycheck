@@ -1,7 +1,7 @@
 # plumbcheck
 
 One `plumbcheck.yml` per repository runs the native linters (ruff, eslint,
-clang-tidy, vale, doc8, codespell, j2lint, gitleaks) and the hooks that
+clang-tidy, clang-format, vale, doc8, codespell, j2lint, gitleaks) and the hooks that
 apply them while Claude Code or Codex works. It only lints: builds, tests and
 type checks stay in the repository's own CI. Locally, in the agents' hooks
 and in CI it is the same command with the same configuration, so a change
@@ -30,13 +30,12 @@ overriding only what it must.
 ## Languages
 
 - [x] Python (`.py`): ruff, ruff format
-- [x] C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.h`, `.tpp`, `.ipp`): clang-tidy
+- [x] C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.h`, `.tpp`, `.ipp`): clang-tidy, clang-format
 - [x] TypeScript (`.ts`, `.tsx`): ESLint
 - [x] reStructuredText (`.rst`): doc8, vale, codespell
 - [x] Jinja (`.j2`, `.jinja`, `.jinja2`): j2lint
 - [x] Secrets (every file): gitleaks
 - [ ] Python types (`.py`): pyright
-- [ ] C++ formatting: clang-format
 - [ ] LaTeX (`.tex`)
 
 ## Install
@@ -48,8 +47,8 @@ plumbcheck install             # download the pinned vale and gitleaks
 plumbcheck hooks install       # lint after each edit and before Claude/Codex stop
 ```
 
-ruff, codespell, doc8, clang-tidy and j2lint are pinned dependencies; vale and
-gitleaks are downloaded into `~/.cache/plumbcheck/bin`, checked against their
+ruff, codespell, doc8, clang-tidy, clang-format and j2lint are pinned
+dependencies; vale and gitleaks are downloaded into `~/.cache/plumbcheck/bin`, checked against their
 sha256 (Linux x64); eslint is the repository's own (`node_modules`).
 
 ## Set a repository up
@@ -214,6 +213,7 @@ without a configuration, it is skipped. Coarse switches stay in
 | `RST_DOC8`, `SPELL_VALE`, `SPELL_CODESPELL` | `.rst` | doc8, vale, codespell |
 | `TYPESCRIPT_ESLINT` | `.ts`, `.tsx` | the repository's `node_modules/.bin/eslint` |
 | `CPP_CLANG_TIDY` | C++ | clang-tidy on the repository's `compile_commands.json` |
+| `CPP_CLANG_FORMAT` | C++ | clang-format with the nearest `.clang-format` (else LLVM's style) |
 | `REPOSITORY_GITLEAKS` | every file | gitleaks |
 
 ### Generated files and compile commands
