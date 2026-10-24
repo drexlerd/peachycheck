@@ -17,6 +17,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./
+        with:
+          # pyright resolves imports in the repository's environment.
+          prepare: uv sync --locked
   # The types and the tests; every linter runs on a fixture and its finding
   # parses and links its rule.
   tests:

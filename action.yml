@@ -114,9 +114,14 @@ runs:
         if [ "$DEFAULT" = true ]; then exec peachycheck lint --all; fi
         if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then BASE=HEAD~1; fi
         peachycheck lint --base "$BASE"
-    # Saved even when the lint fails, so the next run starts from these.
-    - uses: actions/cache/save@v4
+    # Saved even when the lint fails, so the next run starts from these;
+    # a repository without a cached linter has none.
+    - id: results
       if: ${{ !cancelled() }}
+      shell: bash
+      run: if [ -d ~/.cache/peachycheck/results ]; then echo kept=true >> "$GITHUB_OUTPUT"; fi
+    - uses: actions/cache/save@v4
+      if: ${{ !cancelled() && steps.results.outputs.kept == 'true' }}
       with:
         path: ~/.cache/peachycheck/results
         key: peachycheck-results-${{ github.run_id }}
