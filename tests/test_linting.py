@@ -949,7 +949,7 @@ LINTERS:
     extensions: [.cpp, .hpp]
     command: "{python} fake.py"
     cache: {includes: true, inputs: [.fake.yml]}
-    output: 'regex:^(?P<path>[^:]+):(?P<line>\\\\d+): (?P<message>.*) \\\\[(?P<rule>\\\\w+)\\\\]$'
+    output: 'regex:^(?P<path>[^:]+):(?P<line>\\d+): (?P<message>.*) \\[(?P<rule>\\w+)\\]$'
 """
 
 
@@ -975,6 +975,7 @@ def test_cached_results_are_kept_until_an_input_changes(
         return sorted(lines)
 
     first = linting.lint(root, files).findings
+    assert {f.path for f in first} == set(files)
     assert runs() == files  # one file per run
     assert linting.lint(root, files).findings == first
     assert runs() == []
@@ -992,3 +993,55 @@ def test_a_stop_stage_linter_waits_for_the_stop_hook(tmp_path: Path) -> None:
     (root / config.NAME).write_text(spec + "    stage: stop\n")
     assert linting.lint(root, ["src/a.cpp"]).findings
     assert not linting.lint(root, ["src/a.cpp"], edit=True).findings
+
+
+ARGS_LINTER = """\
+import json, pathlib, sys
+database = pathlib.Path(sys.argv[1]) / "compile_commands.json"
+commands = {e["file"]: e["arguments"] for e in json.loads(database.read_text())}
+for source in sys.argv[2:]:
+    flags = commands.get(str(pathlib.Path(source).resolve()), [])
+    included = " ".join(a for a in flags if a.startswith("-I")) or "none"
+    print(f"{source}:1: {included} [flags]")
+"""
+ARGS_SPEC = """\
+ENABLE_LINTERS: [FAKE]
+LINTERS:
+  FAKE:
+    extensions: [.cpp, .hpp]
+    command: "{python} fake.py {requires}"
+    requires: build/compile_commands.json
+    header_commands: true
+    output: 'regex:^(?P<path>[^:]+):(?P<line>\\d+): (?P<message>.*) \\[(?P<rule>\\w+)\\]$'
+"""
+
+
+def test_a_header_borrows_the_command_of_a_source_that_includes_it(
+    tmp_path: Path,
+) -> None:
+    contents = {
+        "fake.py": ARGS_LINTER,
+        config.NAME: ARGS_SPEC,
+        "src/a.cpp": '#include "inner.hpp"\n',
+        "src/inner.hpp": '#include "leaf.hpp"\n',
+        "src/leaf.hpp": "",
+        "src/alone.hpp": "",
+    }
+    root, _ = _repository(tmp_path, contents, configured=False)
+    source = str((root / "src/a.cpp").resolve())
+    _write(
+        root / "build/compile_commands.json",
+        json.dumps(
+            [
+                {
+                    "directory": str(root),
+                    "file": source,
+                    "arguments": ["c++", "-Ispecial", "-c", source],
+                }
+            ]
+        ),
+    )
+    files = ["src/a.cpp", "src/leaf.hpp", "src/alone.hpp"]
+    messages = {f.path: f.message for f in linting.lint(root, files).findings}
+    assert messages["src/leaf.hpp"] == "-Ispecial"  # included through inner.hpp
+    assert messages["src/alone.hpp"] == "none"  # nothing includes it

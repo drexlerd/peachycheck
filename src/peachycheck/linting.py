@@ -376,6 +376,59 @@ def _include_folders(arguments: list[str], folder: Path) -> list[Path]:
     return found
 
 
+def _with_header_commands(
+    root: Path, spec: dict[str, Any], paths: list[str]
+) -> dict[str, Any]:
+    """``spec``, reading a compile database where ``paths`` all have commands.
+
+    A file the database lacks, such as a header, borrows the command of the
+    first file that includes it (directly or not), with the file swapped;
+    without one, the tool's guess from similar paths would miss include
+    folders only that file's target has. The copy lives in a temporary
+    folder named by its content.
+    """
+    database = required(root, spec)
+    if not database or database.suffix != ".json" or not database.is_file():
+        return spec
+    entries = cast(list[dict[str, Any]], json.loads(database.read_text()))
+    folder_of = {
+        _relative(root, str(Path(e.get("directory", ".")) / e["file"])): e
+        for e in entries
+    }
+    missing = [p for p in paths if p not in folder_of]
+    if not missing:
+        return spec
+    scan = _Cache(root, {**spec, "cache": {"includes": True}})
+    closures = {s: scan.closure(s) for s in sorted(folder_of) if s}
+    borrowed: list[dict[str, Any]] = []
+    for path in missing:
+        target = (root / path).resolve()
+        source = next((s for s, c in closures.items() if target in c), None)
+        if source is None:
+            continue
+        entry = folder_of[source]
+        old = str(entry["file"])
+        new = str(target)
+        copy = {**entry, "file": new}
+        if "arguments" in copy:
+            copy["arguments"] = [
+                new if a == old else a for a in entry["arguments"]
+            ]
+        else:
+            copy["command"] = shlex.join(
+                new if a == old else a for a in shlex.split(entry["command"])
+            )
+        borrowed.append(copy)
+    if not borrowed:
+        return spec
+    text = json.dumps(entries + borrowed)
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    folder = Path(tempfile.gettempdir()) / "peachycheck" / digest
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / database.name).write_text(text)
+    return {**spec, "requires": str(folder / database.name)}
+
+
 class _Cache:
     """Results of a ``cache`` linter's runs, one file per run, by inputs.
 
@@ -437,6 +490,18 @@ class _Cache:
             self.included[path] = found
         return self.included[path]
 
+    def closure(self, path: str) -> set[Path]:
+        """``path`` and the repository files it includes, directly or not."""
+        seen: set[Path] = set()
+        pending = [(self.root / path).resolve()]
+        while pending:
+            current = pending.pop()
+            if current not in seen and current.is_file():
+                seen.add(current)
+                if self.spec["cache"].get("includes"):
+                    pending += self._includes(current)
+        return seen
+
     def key(self, path: str) -> str:
         """The key of ``path``'s results: a digest of everything they depend on."""
         digest = hashlib.sha256()
@@ -446,15 +511,7 @@ class _Cache:
         digest.update(self.tool.encode())
         digest.update(self.commands.get(path, self.database).encode())
         start = (self.root / path).resolve()
-        seen: set[Path] = set()
-        pending = [start]
-        while pending:
-            current = pending.pop()
-            if current not in seen:
-                seen.add(current)
-                if self.spec["cache"].get("includes"):
-                    pending += self._includes(current)
-        for file in sorted(seen):
+        for file in sorted(self.closure(path)):
             digest.update(str(file.relative_to(self.root)).encode() + b"\0")
             digest.update(file.read_bytes())
         for folder in (start.parent, *start.parent.parents):
@@ -561,6 +618,8 @@ def lint(
         _fix(root, linters, work)
     jobs: list[tuple[str, list[str], str]] = []  # linter, files, cache key
     for name, paths in work.items():
+        if linters[name].get("header_commands"):
+            linters[name] = _with_header_commands(root, linters[name], paths)
         spec = linters[name]
         if not spec.get("cache"):
             jobs += [(name, chunk, "") for chunk in _jobs(spec, paths)]
