@@ -30,7 +30,8 @@ from plumbcheck import config
 
 BIN: Final = Path("~/.cache/plumbcheck/bin")
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
-CHUNK: Final = 200  # files per run of a linter
+CHUNK: Final = 200  # at most this many files per run of a linter
+WORKERS: Final = os.cpu_count() or 4
 DEFAULT_OK: Final = (0, 1)
 
 
@@ -297,9 +298,18 @@ def parse(spec: dict[str, Any], text: str) -> list[Raw]:
 
 
 def _run(
-    root: Path, name: str, spec: dict[str, Any], paths: list[str]
+    root: Path,
+    name: str,
+    spec: dict[str, Any],
+    paths: list[str],
+    wanted: frozenset[str],
 ) -> Result:
-    """One run of linter ``name`` on ``paths``."""
+    """One run of linter ``name`` on ``paths``; its findings in ``wanted``.
+
+    ``wanted`` is every file of the lint, not only ``paths``: clang-tidy
+    reports a header's findings while checking a source that includes it,
+    and that source may be in another run than the header.
+    """
     try:
         result = subprocess.run(
             _command(root, spec, "command") + paths,
@@ -327,7 +337,6 @@ def _run(
                 f"{name}: unreadable output ({error}):\n{result.stdout[-1500:]}"
             ]
         )
-    wanted = set(paths)
     found = [
         Finding(path, line, name, rule, message.strip(), u or link(spec, rule))
         for path, line, rule, message, u in (
@@ -339,7 +348,13 @@ def _run(
 
 
 def _jobs(spec: dict[str, Any], paths: list[str]) -> list[list[str]]:
-    size = 1 if spec.get("per_file") else CHUNK
+    """``paths`` in runs of a linter, spread over the workers.
+
+    A linter like clang-tidy works through its files one after another, so
+    one run of all of them would use a single core.
+    """
+    spread = -(-len(paths) // WORKERS)
+    size = 1 if spec.get("per_file") else max(1, min(CHUNK, spread))
     return [paths[i : i + size] for i in range(0, len(paths), size)]
 
 
@@ -393,11 +408,14 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
         for name, paths in work.items()
         for chunk in _jobs(linters[name], paths)
     ]
-    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         names = [name for name, _ in jobs]
         chunks = [chunk for _, chunk in jobs]
         specs = [linters[name] for name in names]
-        for part in pool.map(_run, [root] * len(jobs), names, specs, chunks):
+        wanted = [frozenset(work[name]) for name in names]
+        for part in pool.map(
+            _run, [root] * len(jobs), names, specs, chunks, wanted
+        ):
             result.findings += part.findings
             result.problems += part.problems
     result.findings = sorted(set(result.findings))

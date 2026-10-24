@@ -4,6 +4,7 @@ import gzip
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -828,3 +829,38 @@ def test_stop_in_a_parent_folder_checks_each_changed_repository(
     assert reply.code == 2
     assert "In FIRST/:\nFIRST fails" in reply.stderr
     assert "In SECOND/:\nSECOND fails" in reply.stderr
+
+
+def test_runs_are_spread_over_the_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(linting, "WORKERS", 4)
+    paths = [f"f{i}.cpp" for i in range(10)]
+    assert [len(run) for run in linting._jobs({}, paths)] == [3, 3, 3, 1]
+    assert [len(run) for run in linting._jobs({"per_file": True}, paths)] == [
+        1
+    ] * 10
+    many = [f"f{i}.py" for i in range(1000)]
+    assert max(len(run) for run in linting._jobs({}, many)) == linting.CHUNK
+    assert linting._jobs({}, []) == []
+
+
+def test_a_run_keeps_findings_in_files_of_other_runs(tmp_path: Path) -> None:
+    # clang-tidy reports a header's findings while checking a source that
+    # includes it; the header may be in another run than that source.
+    report = "print('include/a.hpp:3:1: warning: bad [some-check]')"
+    pattern = r"^(?P<path>[^:]+):(?P<line>\d+):\d+: warning: (?P<message>.*) \[(?P<rule>[\w-]+)\]$"
+    spec = {
+        "command": f"{{python}} -c {shlex.quote(report)}",
+        "output": f"regex:{pattern}",
+        "arguments": [],
+    }
+    source = ["src/a.cpp"]
+    run = linting._run(
+        tmp_path, "FAKE", spec, source, frozenset({*source, "include/a.hpp"})
+    )
+    assert [(f.path, f.line, f.rule) for f in run.findings] == [
+        ("include/a.hpp", 3, "some-check")
+    ]
+    outside = linting._run(tmp_path, "FAKE", spec, source, frozenset(source))
+    assert outside.findings == []
