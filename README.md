@@ -212,7 +212,7 @@ without a configuration, it is skipped. Coarse switches stay in
 | `J2LINT` | `.j2`, `.jinja`, `.jinja2` | j2lint |
 | `RST_DOC8`, `SPELL_VALE`, `SPELL_CODESPELL` | `.rst` | doc8, vale, codespell |
 | `TYPESCRIPT_ESLINT` | `.ts`, `.tsx` | the repository's `node_modules/.bin/eslint` |
-| `CPP_CLANG_TIDY` | C++ | clang-tidy on the repository's `compile_commands.json` |
+| `CPP_CLANG_TIDY` | C++ | clang-tidy on the repository's `compile_commands.json` ; results are kept per file until it, a header it includes or a `.clang-tidy` above it changes (`~/.cache/plumbcheck/results`, restored and saved by the CI action) |
 | `CPP_CLANG_FORMAT` | C++ | clang-format with the nearest `.clang-format` (else LLVM's style) |
 | `REPOSITORY_GITLEAKS` | every file | gitleaks |
 

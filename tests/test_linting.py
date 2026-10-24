@@ -933,3 +933,54 @@ def test_a_merged_config_is_given_only_over_a_base(tmp_path: Path) -> None:
     _write(root / config.BASE / ".fake.yml", "B: 2\n")
     messages = {f.message for f in linting.lint(root, ["src/a.cpp"]).findings}
     assert messages == {"config given: True"}
+
+
+COUNTING_LINTER = """\
+import pathlib, sys
+with open("runs.log", "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\\n")
+for source in sys.argv[1:]:
+    print(f"{source}:1: checked [seen]")
+"""
+CACHED_SPEC = """\
+ENABLE_LINTERS: [FAKE]
+LINTERS:
+  FAKE:
+    extensions: [.cpp, .hpp]
+    command: "{python} fake.py"
+    cache: {includes: true, inputs: [.fake.yml]}
+    output: 'regex:^(?P<path>[^:]+):(?P<line>\\\\d+): (?P<message>.*) \\\\[(?P<rule>\\\\w+)\\\\]$'
+"""
+
+
+def test_cached_results_are_kept_until_an_input_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(linting, "CACHE", tmp_path / "cache")
+    contents = {
+        "fake.py": COUNTING_LINTER,
+        config.NAME: CACHED_SPEC,
+        ".fake.yml": "A: 1\n",
+        "src/a.cpp": '#include "a.hpp"\n',
+        "src/a.hpp": "",
+        "src/b.cpp": "",
+    }
+    root, _ = _repository(tmp_path, contents, configured=False)
+    files = ["src/a.cpp", "src/b.cpp"]
+
+    def runs() -> list[str]:
+        log = root / "runs.log"
+        lines = log.read_text().splitlines() if log.is_file() else []
+        log.unlink(missing_ok=True)
+        return sorted(lines)
+
+    first = linting.lint(root, files).findings
+    assert runs() == files  # one file per run
+    assert linting.lint(root, files).findings == first
+    assert runs() == []
+    (root / "src/a.hpp").write_text("// changed\n")  # an included file
+    linting.lint(root, files)
+    assert runs() == ["src/a.cpp"]
+    (root / ".fake.yml").write_text("A: 2\n")  # an input
+    linting.lint(root, files)
+    assert runs() == files

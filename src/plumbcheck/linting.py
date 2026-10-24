@@ -8,6 +8,7 @@ finding names its linter, its rule and the rule's documentation.
 
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import yaml
 from plumbcheck import config
 
 BIN: Final = Path("~/.cache/plumbcheck/bin")
+CACHE: Final = Path("~/.cache/plumbcheck/results")
 SHOWN_FINDINGS: Final = 20  # of a file, in a repair message
 CHUNK: Final = 200  # at most this many files per run of a linter
 WORKERS: Final = os.cpu_count() or 4
@@ -317,17 +319,12 @@ def parse(spec: dict[str, Any], text: str) -> list[Raw]:
 
 
 def _run(
-    root: Path,
-    name: str,
-    spec: dict[str, Any],
-    paths: list[str],
-    wanted: frozenset[str],
+    root: Path, name: str, spec: dict[str, Any], paths: list[str]
 ) -> Result:
-    """One run of linter ``name`` on ``paths``; its findings in ``wanted``.
+    """One run of linter ``name`` on ``paths``: all its findings.
 
-    ``wanted`` is every file of the lint, not only ``paths``: clang-tidy
-    reports a header's findings while checking a source that includes it,
-    and that source may be in another run than the header.
+    They may lie in other files than ``paths``: clang-tidy reports a
+    header's findings while checking a source that includes it.
     """
     try:
         result = subprocess.run(
@@ -360,9 +357,141 @@ def _run(
         for path, line, rule, message, u in (
             (_relative(root, p), n, r, m, u) for p, n, r, m, u in raw
         )
-        if path in wanted
+        if path
     ]
     return Result(findings=found)
+
+
+INCLUDE: Final = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
+FOLDER_FLAGS: Final = ("-isystem", "-iquote", "-I")
+
+
+def _include_folders(arguments: list[str], folder: Path) -> list[Path]:
+    """The include folders of a compile command run in ``folder``."""
+    found: list[Path] = []
+    for flag, value in itertools.pairwise([*arguments, ""]):
+        prefix = next((f for f in FOLDER_FLAGS if flag.startswith(f)), "")
+        if prefix:
+            found.append(folder / (flag.removeprefix(prefix) or value))
+    return found
+
+
+class _Cache:
+    """Results of a ``cache`` linter's runs, one file per run, by inputs.
+
+    The key covers the file, the repository files it includes (scanning
+    ``#include`` against the compile commands' include folders), the files
+    ``cache.inputs`` names (such as ``.clang-tidy``) from the file's folder
+    up, its compile command, the linter's settings and the tool's version.
+    Headers outside the repository are not scanned: after rebuilding
+    dependencies, clear the cache.
+    """
+
+    def __init__(self, root: Path, spec: dict[str, Any]) -> None:
+        self.root = root.resolve()
+        self.spec = spec
+        self.commands: dict[str, str] = {}
+        folders: list[Path] = []
+        database = required(root, spec)
+        self.database = ""
+        if database and database.suffix == ".json" and database.is_file():
+            text = database.read_text()
+            self.database = hashlib.sha256(text.encode()).hexdigest()
+            for entry in cast(list[dict[str, Any]], json.loads(text)):
+                arguments = entry.get("arguments") or shlex.split(
+                    entry["command"]
+                )
+                folder = Path(entry.get("directory", "."))
+                file = _relative(root, str(folder / entry["file"]))
+                self.commands[file] = shlex.join(map(str, arguments))
+                folders += _include_folders(arguments, folder)
+        self.folders = [
+            f
+            for f in dict.fromkeys(f.resolve() for f in folders)
+            if f.is_relative_to(self.root)
+        ]
+        tool = shlex.split(str(spec["command"]))[0]
+        try:  # the version, not the binary: CI installs a fresh copy each run
+            self.tool = subprocess.run(
+                [tool, "--version"],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": search_path()},
+            ).stdout
+        except OSError:
+            self.tool = tool
+        self.included: dict[Path, list[Path]] = {}
+
+    def _includes(self, path: Path) -> list[Path]:
+        """The repository files ``path`` includes directly."""
+        if path not in self.included:
+            found: list[Path] = []
+            for name in INCLUDE.findall(path.read_text(errors="replace")):
+                for folder in (path.parent, *self.folders):
+                    candidate = (folder / name).resolve()
+                    if candidate.is_file() and candidate.is_relative_to(
+                        self.root
+                    ):
+                        found.append(candidate)
+                        break
+            self.included[path] = found
+        return self.included[path]
+
+    def key(self, path: str) -> str:
+        """The key of ``path``'s results: a digest of everything they depend on."""
+        digest = hashlib.sha256()
+        digest.update(
+            json.dumps(self.spec, sort_keys=True, default=str).encode()
+        )
+        digest.update(self.tool.encode())
+        digest.update(self.commands.get(path, self.database).encode())
+        start = (self.root / path).resolve()
+        seen: set[Path] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            if current not in seen:
+                seen.add(current)
+                if self.spec["cache"].get("includes"):
+                    pending += self._includes(current)
+        for file in sorted(seen):
+            digest.update(str(file.relative_to(self.root)).encode() + b"\0")
+            digest.update(file.read_bytes())
+        for folder in (start.parent, *start.parent.parents):
+            if not folder.is_relative_to(self.root):
+                break
+            for name in map(str, self.spec["cache"].get("inputs", [])):
+                if (folder / name).is_file():
+                    digest.update(name.encode() + b"\0")
+                    digest.update((folder / name).read_bytes())
+        return digest.hexdigest()
+
+    @staticmethod
+    def _file(key: str) -> Path:
+        return CACHE.expanduser() / key[:2] / f"{key}.json"
+
+    @classmethod
+    def load(cls, key: str) -> list[Finding] | None:
+        """The kept findings of ``key``, if any."""
+        try:
+            rows = cast(list[list[Any]], json.loads(cls._file(key).read_text()))
+        except (OSError, ValueError):
+            return None
+        return [
+            Finding(str(p), int(n), str(lt), str(r), str(m), str(u))
+            for p, n, lt, r, m, u in rows
+        ]
+
+    @classmethod
+    def store(cls, key: str, findings: list[Finding]) -> None:
+        """Keep ``findings`` under ``key``."""
+        file = cls._file(key)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            [f.path, f.line, f.linter, f.rule, f.message, f.link]
+            for f in findings
+        ]
+        file.write_text(json.dumps(rows))
 
 
 def _jobs(spec: dict[str, Any], paths: list[str]) -> list[list[str]]:
@@ -425,22 +554,33 @@ def lint(root: Path, paths: Sequence[str], *, fix: bool = False) -> Result:
         work[name] = selected
     if fix:
         _fix(root, linters, work)
-    jobs = [
-        (name, chunk)
-        for name, paths in work.items()
-        for chunk in _jobs(linters[name], paths)
-    ]
+    jobs: list[tuple[str, list[str], str]] = []  # linter, files, cache key
+    for name, paths in work.items():
+        spec = linters[name]
+        if not spec.get("cache"):
+            jobs += [(name, chunk, "") for chunk in _jobs(spec, paths)]
+            continue
+        cache = _Cache(root, spec)
+        for path in paths:  # one file per run, so its results can be kept
+            key = cache.key(path)
+            kept = _Cache.load(key)
+            if kept is None:
+                jobs.append((name, [path], key))
+            else:
+                result.findings += kept
+
+    def run(job: tuple[str, list[str], str]) -> Result:
+        return _run(root, job[0], linters[job[0]], job[1])
+
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        names = [name for name, _ in jobs]
-        chunks = [chunk for _, chunk in jobs]
-        specs = [linters[name] for name in names]
-        wanted = [frozenset(work[name]) for name in names]
-        for part in pool.map(
-            _run, [root] * len(jobs), names, specs, chunks, wanted
-        ):
+        for (_, _, key), part in zip(jobs, pool.map(run, jobs), strict=True):
+            if key and not part.problems:
+                _Cache.store(key, part.findings)
             result.findings += part.findings
             result.problems += part.problems
-    result.findings = sorted(set(result.findings))
+    result.findings = sorted(
+        {f for f in result.findings if f.path in work.get(f.linter, ())}
+    )
     return result
 
 

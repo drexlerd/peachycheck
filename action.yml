@@ -96,6 +96,13 @@ runs:
         PREPARE: ${{ inputs.prepare }}
         TOKEN: ${{ inputs.token || github.token }}
       run: eval "$PREPARE"
+    # Kept results of slow linters (clang-tidy): the latest of this branch or
+    # of any other, so a run checks again only what changed.
+    - uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/plumbcheck/results
+        key: plumbcheck-results-${{ github.run_id }}
+        restore-keys: plumbcheck-results-
     # Runs even when the configurations differ, so both are reported.
     - name: No findings
       if: ${{ !cancelled() }}
@@ -107,3 +114,9 @@ runs:
         if [ "$DEFAULT" = true ]; then exec plumbcheck lint --all; fi
         if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then BASE=HEAD~1; fi
         plumbcheck lint --base "$BASE"
+    # Saved even when the lint fails, so the next run starts from these.
+    - uses: actions/cache/save@v4
+      if: ${{ !cancelled() }}
+      with:
+        path: ~/.cache/plumbcheck/results
+        key: plumbcheck-results-${{ github.run_id }}
