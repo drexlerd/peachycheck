@@ -633,12 +633,12 @@ def lint(
             )
             continue
         work[name] = selected
+        if spec.get("header_commands"):  # before fixing: fixes need them too
+            linters[name] = _with_header_commands(root, spec, selected)
     if fix:
         _fix(root, linters, work)
     jobs: list[tuple[str, list[str], str]] = []  # linter, files, cache key
     for name, paths in work.items():
-        if linters[name].get("header_commands"):
-            linters[name] = _with_header_commands(root, linters[name], paths)
         spec = linters[name]
         if not spec.get("cache"):
             jobs += [(name, chunk, "") for chunk in _jobs(spec, paths)]

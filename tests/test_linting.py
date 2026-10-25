@@ -1068,3 +1068,34 @@ def test_a_compile_error_outside_the_repository_is_reported_for_the_file(
     assert not result.findings
     assert "src/a.hpp does not compile" in result.problems[0]
     assert "type_traits:3374: undefined template" in result.problems[0]
+
+
+def test_lint_fix_applies_clang_tidy_s_fixes_to_a_header(
+    tmp_path: Path,
+) -> None:
+    root, _ = _repository(
+        tmp_path,
+        {
+            "a.cpp": '#include "a.hpp"\n',
+            "a.hpp": "inline int* none() { return 0; }\n",
+            ".clang-tidy": "Checks: '-*,modernize-use-nullptr'\n",
+        },
+    )
+    source = str(root / "a.cpp")
+    _write(
+        root / "build" / "peachycheck" / "compile_commands.json",
+        json.dumps(
+            [
+                {
+                    "directory": str(root),
+                    "file": source,
+                    "command": f"c++ -std=c++20 -c {source}",
+                }
+            ]
+        ),
+    )
+    found = linting.lint(root, ["a.hpp"], fix=True)
+    if found.problems and not os.environ.get("REQUIRE_CHECKERS"):
+        pytest.skip("; ".join(found.problems))
+    assert "return nullptr;" in (root / "a.hpp").read_text()
+    assert not [f for f in found.findings if f.linter == "CPP_CLANG_TIDY"]

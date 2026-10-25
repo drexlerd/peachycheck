@@ -128,6 +128,8 @@ LINTERS:
       "": https://clang.llvm.org/extra/clang-tidy/checks/{group}/{name}.html
       clang-analyzer-: https://clang.llvm.org/extra/clang-tidy/checks/clang-analyzer/{name}.html
     command: clang-tidy -p {requires} --quiet
+    # A file with compile errors is left alone (no --fix-errors).
+    fix: clang-tidy -p {requires} --quiet --fix
     cache: {includes: true, inputs: [.clang-tidy, .peachycheck/.clang-tidy]}
     header_commands: true
     fatal: [clang-diagnostic-error]
