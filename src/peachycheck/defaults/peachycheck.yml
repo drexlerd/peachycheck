@@ -43,6 +43,8 @@
 # files from its folder up, its compile command, the linter's settings and
 # its version. With `header_commands`, a file the compile database lacks,
 # such as a header, borrows the command of a file that includes it.
+# A finding of a `fatal` rule, wherever it lies, means the file did not
+# compile: it is reported for the file instead of the other findings.
 # `stage: stop` keeps a slow linter out of the hook after each
 # edit; the stop hook, `lint` and CI still run it. `ok` lists the
 # exit codes that mean "ran". `requires` is a file the linter needs, or a
@@ -128,6 +130,7 @@ LINTERS:
     command: clang-tidy -p {requires} --quiet
     cache: {includes: true, inputs: [.clang-tidy, .peachycheck/.clang-tidy]}
     header_commands: true
+    fatal: [clang-diagnostic-error]
     stage: stop
     config: {file: .clang-tidy, flag: --config-file, merge: yaml}
     output: 'regex:^(?P<path>[^\s:][^:\n]*):(?P<line>\d+):\d+: (?:warning|error): (?P<message>.*) \[(?P<rule>[\w.,-]+)\]$'

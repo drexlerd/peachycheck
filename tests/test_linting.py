@@ -1045,3 +1045,26 @@ def test_a_header_borrows_the_command_of_a_source_that_includes_it(
     messages = {f.path: f.message for f in linting.lint(root, files).findings}
     assert messages["src/leaf.hpp"] == "-Ispecial"  # included through inner.hpp
     assert messages["src/alone.hpp"] == "none"  # nothing includes it
+
+
+def test_a_compile_error_outside_the_repository_is_reported_for_the_file(
+    tmp_path: Path,
+) -> None:
+    linter = (
+        "import sys\n"
+        'print("/usr/include/type_traits:3374: undefined template [fatal]")\n'
+        'print(f"{sys.argv[1]}:1: field not initialized [noise]")\n'
+    )
+    spec = ARGS_SPEC.replace(" {requires}", "").replace(
+        "    requires: build/compile_commands.json\n    header_commands: true",
+        "    fatal: [fatal]",
+    )
+    root, _ = _repository(
+        tmp_path,
+        {"fake.py": linter, config.NAME: spec, "src/a.hpp": ""},
+        configured=False,
+    )
+    result = linting.lint(root, ["src/a.hpp"])
+    assert not result.findings
+    assert "src/a.hpp does not compile" in result.problems[0]
+    assert "type_traits:3374: undefined template" in result.problems[0]

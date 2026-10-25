@@ -355,6 +355,21 @@ def _run(
         return Result(
             problems=[f"{name}: unreadable output ({error}):\n{text[-1500:]}"]
         )
+    fatal = [r for r in raw if r[2] in spec.get("fatal", ())]
+    if fatal:  # the other findings of a file that did not compile are noise
+        errors = [f"  {p}:{n}: {m.strip()}" for p, n, _, m, _ in fatal[:3]]
+        notes = dict.fromkeys(  # where the repository's code led to them
+            f"  {_relative(root, m[1])}:{m[2]}: note: {m[3]}"
+            for m in NOTE.finditer(text)
+            if _relative(root, m[1])
+        )
+        return Result(
+            problems=[
+                f"{name}: {', '.join(paths)} does not compile (a header "
+                "is compiled on its own, with the command of a source that "
+                "includes it):\n" + "\n".join(errors + list(notes)[:5])
+            ]
+        )
     found = [
         Finding(path, line, name, rule, message.strip(), u or link(spec, rule))
         for path, line, rule, message, u in (
@@ -365,6 +380,7 @@ def _run(
     return Result(findings=found)
 
 
+NOTE: Final = re.compile(r"^([^\s:][^:\n]*):(\d+):\d+: note: (.*)$", re.M)
 INCLUDE: Final = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
 FOLDER_FLAGS: Final = ("-isystem", "-iquote", "-I")
 
