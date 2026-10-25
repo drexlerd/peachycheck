@@ -1,6 +1,6 @@
 {
   "name": "peachycheck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lint after each edit and before the agent stops, with the peachycheck on PATH",
   "author": {
     "name": "Dominik Drexler",

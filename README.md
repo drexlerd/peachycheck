@@ -268,7 +268,8 @@ hooks from this repository as a plugin (or add the marketplace
 `drexlerd/peachycheck` under a cloud project's settings):
 
 ```sh
-/plugin install peachycheck --marketplace drexlerd/peachycheck
+/plugin marketplace add drexlerd/peachycheck
+/plugin install peachycheck@peachycheck
 ```
 
 The plugin runs `peachycheck hook post-edit` after each `Edit|Write|MultiEdit`
@@ -307,7 +308,7 @@ The tests use the sample organization in `tests/fixtures/org`.
 
 ## Release
 
-Set `version` in `pyproject.toml`, merge, then tag the merge commit:
+Set `version` in `pyproject.toml` and `.claude-plugin/plugin.json`, merge, then tag the merge commit:
 
 ```sh
 git tag v0.1.1 && git push origin v0.1.1
