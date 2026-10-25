@@ -1,6 +1,6 @@
 [project]
 name = "peachycheck"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native linters and agent hooks from one peachycheck.yml per repository"
 readme = "README.md"
 license = "AGPL-3.0-only"

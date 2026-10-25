@@ -3,7 +3,7 @@
 #
 #   jobs:
 #     peachycheck:
-#       uses: drexlerd/peachycheck/.github/workflows/check.yml@v0.1.0
+#       uses: drexlerd/peachycheck/.github/workflows/check.yml@v0.1.1
 #       secrets: inherit   # SUBMODULES_TOKEN for private submodules
 #       # with:
 #       #   prepare: npm ci  # what the linters need first
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # The release this file belongs to; release.yml checks it.
-      - uses: drexlerd/peachycheck@v0.1.0
+      - uses: drexlerd/peachycheck@v0.1.1
         with:
           version: ${{ inputs.version }}
           prepare: ${{ inputs.prepare }}

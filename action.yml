@@ -4,7 +4,7 @@
 #     peachycheck:
 #       runs-on: ubuntu-latest
 #       steps:
-#         - uses: drexlerd/peachycheck@v0.1.0
+#         - uses: drexlerd/peachycheck@v0.1.1
 #           with:
 #             token: ${{ secrets.SUBMODULES_TOKEN }}   # optional
 #             prepare: npm ci                          # optional
@@ -25,7 +25,7 @@ branding:
 inputs:
   version:
     description: >-
-      The peachycheck to install: a release such as 0.1.0 (from PyPI) or a git
+      The peachycheck to install: a release such as 0.1.1 (from PyPI) or a git
       ref of drexlerd/peachycheck. Default: PEACHYCHECK_VERSION of
       peachycheck.yml, else this action's own code.
     default: ""
