@@ -987,6 +987,80 @@ def test_cached_results_are_kept_until_an_input_changes(
     assert runs() == files
 
 
+EXTERNAL_SPEC = """\
+ENABLE_LINTERS: [FAKE]
+LINTERS:
+  FAKE:
+    extensions: [.cpp, .hpp]
+    command: "{python} fake.py"
+    requires: build/compile_commands.json
+    cache: {includes: true}
+    output: 'regex:^(?P<path>[^:]+):(?P<line>\\d+): (?P<message>.*) \\[(?P<rule>\\w+)\\]$'
+"""
+
+
+def test_cached_results_follow_the_headers_of_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dependency's headers, outside the repository, are inputs too."""
+    monkeypatch.setattr(linting, "CACHE", tmp_path / "cache")
+    installed = tmp_path / "env/lib/python3.12/site-packages"
+    record = installed / "dep-1.0.dist-info/RECORD"
+    _write(record, "dep/include/dep.hpp,sha256=one,1\n")
+    _write(installed / "dep/include/dep.hpp", "")
+    other = tmp_path / "prefix/include"
+    _write(other / "other.hpp", "")
+    root, _ = _repository(
+        tmp_path,
+        {
+            "fake.py": COUNTING_LINTER,
+            config.NAME: EXTERNAL_SPEC,
+            "src/a.cpp": "",
+        },
+        configured=False,
+    )
+    command = [
+        "c++",
+        f"-I{installed / 'dep/include'}",
+        "-isystem",
+        str(other),
+        "-c",
+        "src/a.cpp",
+    ]
+    _write(
+        root / "build/compile_commands.json",
+        json.dumps(
+            [
+                {
+                    "directory": str(root),
+                    "file": "src/a.cpp",
+                    "arguments": command,
+                }
+            ]
+        ),
+    )
+
+    def runs() -> list[str]:
+        log = root / "runs.log"
+        lines = log.read_text().splitlines() if log.is_file() else []
+        log.unlink(missing_ok=True)
+        return lines
+
+    linting.lint(root, ["src/a.cpp"])
+    assert runs() == ["src/a.cpp"]
+    _write(
+        installed / "dep/include/dep.hpp", ""
+    )  # reinstalled, the same version
+    linting.lint(root, ["src/a.cpp"])
+    assert runs() == []
+    record.write_text("dep/include/dep.hpp,sha256=two,2\n")  # another version
+    linting.lint(root, ["src/a.cpp"])
+    assert runs() == ["src/a.cpp"]
+    (other / "other.hpp").write_text("// changed\n")  # outside a site-packages
+    linting.lint(root, ["src/a.cpp"])
+    assert runs() == ["src/a.cpp"]
+
+
 def test_a_stop_stage_linter_waits_for_the_stop_hook(tmp_path: Path) -> None:
     root = _fake(tmp_path, ["src/a.cpp"])
     spec = (root / config.NAME).read_text()

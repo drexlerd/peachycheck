@@ -40,8 +40,10 @@
 # in one run (the linter parallelizes itself). `cache` keeps each file's
 # findings in ~/.cache/peachycheck/results until an input changes: the file,
 # with `includes: true` the repository files it includes, the `inputs`
-# files from its folder up, its compile command, the linter's settings and
-# its version. With `header_commands`, a file the compile database lacks,
+# files from its folder up, its compile command, the linter's settings, its
+# version, and the include folders outside the repository its compile
+# command names (in a site-packages, its packages' RECORDs; elsewhere, the
+# files' sizes and times). With `header_commands`, a file the compile database lacks,
 # such as a header, borrows the command of a file that includes it.
 # A finding of a `fatal` rule, wherever it lies, means the file did not
 # compile: it is reported for the file instead of the other findings.

@@ -454,15 +454,20 @@ class _Cache:
     The key covers the file, the repository files it includes (scanning
     ``#include`` against the compile commands' include folders), the files
     ``cache.inputs`` names (such as ``.clang-tidy``) from the file's folder
-    up, its compile command, the linter's settings and the tool's version.
-    Headers outside the repository are not scanned: after rebuilding
-    dependencies, clear the cache.
+    up, its compile command, the linter's settings and the tool's version,
+    and a fingerprint of each include folder outside the repository that its
+    compile command names: in a ``site-packages``, its installed packages'
+    ``RECORD`` files (every installed file with its sha256), so that a
+    reinstall of the same versions keeps the results and another version
+    does not; elsewhere, its files' sizes and modification times.
     """
 
     def __init__(self, root: Path, spec: dict[str, Any]) -> None:
         self.root = root.resolve()
         self.spec = spec
         self.commands: dict[str, str] = {}
+        # Of each file with a command, its include folders outside the repository.
+        self.external: dict[str, list[Path]] = {}
         folders: list[Path] = []
         database = required(root, spec)
         self.database = ""
@@ -476,7 +481,11 @@ class _Cache:
                 folder = Path(entry.get("directory", "."))
                 file = _relative(root, str(folder / entry["file"]))
                 self.commands[file] = shlex.join(map(str, arguments))
-                folders += _include_folders(arguments, folder)
+                own = [f.resolve() for f in _include_folders(arguments, folder)]
+                self.external[file] = [
+                    f for f in own if not f.is_relative_to(self.root)
+                ]
+                folders += own
         self.folders = [
             f
             for f in dict.fromkeys(f.resolve() for f in folders)
@@ -493,6 +502,38 @@ class _Cache:
         except OSError:
             self.tool = tool
         self.included: dict[Path, list[Path]] = {}
+        # A file without a command: the external folders of every command.
+        self.everywhere = sorted(
+            {f for fs in self.external.values() for f in fs}
+        )
+        self.fingerprints: dict[Path, str] = {}
+
+    def _fingerprint(self, folder: Path) -> str:
+        """What the headers of ``folder``, outside the repository, are."""
+        installed = next(
+            (
+                p
+                for p in (folder, *folder.parents)
+                if p.name in ("site-packages", "dist-packages")
+            ),
+            None,
+        )
+        where = installed if installed is not None else folder
+        if where not in self.fingerprints:
+            digest = hashlib.sha256()
+            if installed is not None:  # what pip installed, file by file
+                for record in sorted(installed.glob("*.dist-info/RECORD")):
+                    digest.update(record.parent.name.encode() + b"\0")
+                    digest.update(record.read_bytes())
+            elif folder.is_dir():
+                for file in sorted(p for p in folder.rglob("*") if p.is_file()):
+                    stat = file.stat()
+                    digest.update(
+                        f"{file.relative_to(folder)}\0{stat.st_size}"
+                        f"\0{stat.st_mtime_ns}\0".encode()
+                    )
+            self.fingerprints[where] = digest.hexdigest()
+        return self.fingerprints[where]
 
     def _includes(self, path: Path) -> list[Path]:
         """The repository files ``path`` includes directly."""
@@ -529,6 +570,9 @@ class _Cache:
         )
         digest.update(self.tool.encode())
         digest.update(self.commands.get(path, self.database).encode())
+        for folder in self.external.get(path, self.everywhere):
+            digest.update(str(folder).encode() + b"\0")
+            digest.update(self._fingerprint(folder).encode())
         start = (self.root / path).resolve()
         for file in sorted(self.closure(path)):
             digest.update(str(file.relative_to(self.root)).encode() + b"\0")
