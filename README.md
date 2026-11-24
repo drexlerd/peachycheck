@@ -88,9 +88,9 @@ jobs:
   peachycheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: drexlerd/peachycheck@v0.1.1
+      - uses: drexlerd/peachycheck@v0.1.2
         # with:
-        #   version: 0.1.1                          # see below
+        #   version: 0.1.2                          # see below
         #   token: ${{ secrets.SUBMODULES_TOKEN }}  # private submodules
         #   prepare: npm ci                         # what the linters need
 ```
@@ -100,13 +100,13 @@ The reusable workflow does the same in three lines:
 ```yaml
 jobs:
   peachycheck:
-    uses: drexlerd/peachycheck/.github/workflows/check.yml@v0.1.1
+    uses: drexlerd/peachycheck/.github/workflows/check.yml@v0.1.2
     secrets: inherit
 ```
 
 It checks the repository out and installs peachycheck: the `version` input,
 else the repository's `PEACHYCHECK_VERSION`, else the action's own code (so
-`@<commit>` installs that commit). A version such as `0.1.1` comes from
+`@<commit>` installs that commit). A version such as `0.1.2` comes from
 PyPI, anything else is a git ref of this repository. Then it fails when
 
 1. a tool configuration differs from what the configuration shares
@@ -139,7 +139,7 @@ then the files it `EXTENDS`, then its own keys, in MegaLinter's style:
 
 ```yaml
 EXTENDS: https://raw.githubusercontent.com/my-org/standards/<commit>/peachycheck.yml
-PEACHYCHECK_VERSION: 0.1.1
+PEACHYCHECK_VERSION: 0.1.2
 DISABLE_LINTERS: [SPELL_VALE]
 FILTER_REGEX_EXCLUDE: ^vendor/
 PYTHON_RUFF_ARGUMENTS: [--preview]
@@ -311,7 +311,7 @@ The tests use the sample organization in `tests/fixtures/org`.
 Set `version` in `pyproject.toml` and `.claude-plugin/plugin.json`, merge, then tag the merge commit:
 
 ```sh
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 Before tagging, point `.github/workflows/check.yml` at the action of the
